@@ -17,7 +17,7 @@ Parity/speed knobs (minimal diffs):
 
 accelerate launch --num_processes=8 np_llm_gsm8k.py \
   --model_name Qwen/Qwen2.5-1.5B-Instruct \
-  --hf_cache_dir /opt/dlami/nvme/catherine \
+  --hf_cache_dir $HOME/hf_cache \
   --mixed_precision bf16 \
   --n_train 10 --n_eval 100 \
   --n_iters 10 --pop_size 30 \
@@ -59,7 +59,7 @@ _PARITY_B = []
 # -------------------- CLI (kept same as WP, plus 3 NP knobs) --------------------
 parser = argparse.ArgumentParser()
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2.5-1.5B-Instruct')
-parser.add_argument('--hf_cache_dir', type=str, default='/opt/dlami/nvme/catherine')
+parser.add_argument('--hf_cache_dir', type=str,default=os.path.expanduser('~/hf_cache'))
 parser.add_argument('--mixed_precision', type=str, default='fp16', choices=['no', 'fp16', 'bf16'])
 parser.add_argument('--gpu_threads', type=int, default=1, help='Parallel threads per GPU (set to 1 if issues)')
 parser.add_argument('--verbose', action='store_true')
