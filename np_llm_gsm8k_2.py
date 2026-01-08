@@ -103,7 +103,7 @@ POPULATION_SIZE = args.pop_size
 SIGMA = args.sigma
 ALPHA = args.alpha
 max_new_tokens = 256
-do_sample = False  # keep greedy like WP
+do_sample = False  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
 
 # -------------------- Dataset (unchanged) --------------------
 print("Loading GSM8K dataset...")
@@ -134,6 +134,7 @@ def compute_reward(generated_text, target_text):
     numbers = re.findall(r"[-+]?\d*\.?\d+", generated_text.replace(",", ""))
     if len(numbers) > 0:
         final_number = numbers[-1]
+        # ** sparse rewards
         return 1.0 if final_number == target_text else 0.0
     else:
         return 0.0
@@ -338,6 +339,7 @@ class _NPActivationHook:
                             mod.bias.grad = torch.zeros_like(mod.bias)
                         mod.bias.grad.add_((grad_scale * xi.sum(dim=0)).to(mod.bias.dtype))
 
+                # ** this noise is applied after the linear layer. even if noise is present, it rarely propagates to logits
                 y_noisy = (y32 + xi).to(y_dtype)
 
             self._row_counters[name] += N
@@ -421,7 +423,7 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
         for i, ids in enumerate(gen_ids):
             ids_tensor = ids.to(device) if not ids.is_cuda else ids
             li = prm_len[i]
-            cont_tokens.append(ids_tensor[li:])  # exact continuation tokens from A
+            cont_tokens.append(ids_tensor[li:])  # exact continuation tokens from A --> ** no counterfactual trajectories, NP degenerates
         
         with torch.no_grad():
             # Step 1: Batched prefill over all prompts
@@ -684,6 +686,12 @@ def main():
         for _, p in _named_linear_params(original_model, include=args.np_include, last_k=args.last_k):
             if p.grad is not None:
                 p.grad.zero_()
+        
+        # ** checking double-scaling
+        for name, p in _named_linear_params(original_model, include=args.np_include, last_k=args.last_k):
+            if p.grad is not None:
+                print(name, p.grad.norm().item())
+                break
 
         # replay only the candidates handled by this process (EXACT cached replay with exact IDs)
         for seed_idx, seed in local_seeds:
@@ -742,9 +750,9 @@ def main():
                 for p in params:
                     total += (p.grad.float().norm(2) ** 2)
                 gnorm = total.sqrt().clamp_min(1e-12)
-                step_scale = ALPHA / gnorm
+                # step_scale = ALPHA / gnorm  
                 for p in params:
-                    p.add_(step_scale * p.grad)  # ascent
+                    p.add_(ALPHA * p.grad)  # ascent # ** p.grad already scaled by gscale
                     p.grad = None
 
         # Copy weights to other replicas (unchanged)

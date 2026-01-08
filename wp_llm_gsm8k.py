@@ -15,6 +15,8 @@ accelerate launch --num_processes=8 wp_llm_gsm8k.py \
 """
 
 # need to mkdir -p $HOME/hf_cache
+# mit_preemptable was the best partition for a complete run.  
+# srun --partition=mit_preemptable --gres=gpu:1 --mem=32G --time=12:00:00 --pty bash
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -291,6 +293,19 @@ def main():
 
     if accelerator.is_main_process:
         print("Model loaded successfully")
+
+    # implementing explicit checkpointing
+    if accelerator.is_main_process and iteration % 5 == 0:
+        ckpt_dir = os.path.join(args.visualization_dir, f"checkpoint_iter_{iteration}")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        accelerator.unwrap_model(model_list[0]).save_pretrained(ckpt_dir)
+        tokenizer.save_pretrained(ckpt_dir)
+
+        with open(os.path.join(ckpt_dir, "state.json"), "w") as f:
+            json.dump({
+                "iteration": iteration,
+                "meta_seed": args.meta_seed,
+            }, f)
 
     # Prepare models
     for i in range(len(model_list)):
