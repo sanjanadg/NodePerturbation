@@ -750,9 +750,9 @@ def main():
                 for p in params:
                     total += (p.grad.float().norm(2) ** 2)
                 gnorm = total.sqrt().clamp_min(1e-12)
-                # step_scale = ALPHA / gnorm  
+                step_scale = ALPHA / gnorm  
                 for p in params:
-                    p.add_(ALPHA * p.grad)  # ascent # ** p.grad already scaled by gscale
+                    p.add_(step_scale * p.grad)  # ascent
                     p.grad = None
 
         # Copy weights to other replicas (unchanged)
