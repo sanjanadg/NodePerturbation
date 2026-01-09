@@ -667,16 +667,17 @@ def main():
             texts_by_seed_idx[seed_idx] = texts
             ids_by_seed_idx[seed_idx] = gen_ids
             parity_A_by_sid[seed_idx] = parity_A
-        
-        ## testing to see if the issue is that the reward variance is still too low
-        iter_rewards, iter_counts = np.unique(all_rewards, return_counts=True)
-        print("Unique rewards and their counts:")
-        print(dict(zip(iter_rewards, iter_counts)))
 
         if _ddp(accelerator):
             dist.all_reduce(all_rewards, op=dist.ReduceOp.SUM)
 
         rewards = all_rewards.cpu().tolist()
+
+        ## testing to see if the issue is that the reward variance is still too low
+        iter_rewards, iter_counts = np.unique(rewards, return_counts=True)
+        print("Unique rewards and their counts:")
+        print(dict(zip(iter_rewards, iter_counts)))
+
         del all_rewards
         force_memory_cleanup()
 
