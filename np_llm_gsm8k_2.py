@@ -579,6 +579,13 @@ def main():
             model_list[0], tokenizer, eval_inputs, eval_targets,
             accelerator, verbose=False, return_text=False
         )
+
+        ## testing to see if the issue is that the reward variance is still too low
+        train_unique, train_counts = np.unique(train_rewards, return_counts=True)
+        print("Unique rewards and their counts")
+        print(dict(zip(train_unique, train_counts)))
+
+
         baseline_train = float(np.mean(train_rewards))
         baseline_eval = float(np.mean(eval_rewards))
         print(f"[BASELINE] train_acc={baseline_train:.3f} eval_acc={baseline_eval:.3f}")
