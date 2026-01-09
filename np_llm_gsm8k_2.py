@@ -581,10 +581,9 @@ def main():
         )
 
         ## testing to see if the issue is that the reward variance is still too low
-        train_unique, train_counts = np.unique(train_rewards, return_counts=True)
-        print("Unique rewards and their counts")
-        print(dict(zip(train_unique, train_counts)))
-
+        baseline_unique, baseline_counts = np.unique(train_rewards, return_counts=True)
+        print("Unique rewards and their counts (baseline):")
+        print(dict(zip(baseline_unique, baseline_counts)))
 
         baseline_train = float(np.mean(train_rewards))
         baseline_eval = float(np.mean(eval_rewards))
@@ -662,6 +661,11 @@ def main():
         texts_by_seed_idx = [None] * POPULATION_SIZE
         ids_by_seed_idx = [None] * POPULATION_SIZE
         parity_A_by_sid = {}
+
+        ## testing to see if the issue is that the reward variance is still too low
+        iter_rewards, iter_counts = np.unique(all_rewards, return_counts=True)
+        print("Unique rewards and their counts:")
+        print(dict(zip(iter_rewards, iter_counts)))
 
         for seed_idx, reward, texts, gen_ids, parity_A in local_results:
             all_rewards[seed_idx] = reward
