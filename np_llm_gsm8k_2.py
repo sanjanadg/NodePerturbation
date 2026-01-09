@@ -103,7 +103,8 @@ POPULATION_SIZE = args.pop_size
 SIGMA = args.sigma
 ALPHA = args.alpha
 max_new_tokens = 256
-do_sample = False  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
+do_sample = True  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
+temperature = 1.0
 
 # -------------------- Dataset (unchanged) --------------------
 print("Loading GSM8K dataset...")
@@ -161,7 +162,7 @@ def evaluate_model(model, tokenizer, input_text, target_text, accelerator, seed_
     with torch.inference_mode():
         unwrapped_model = accelerator.unwrap_model(model)
         outputs = unwrapped_model.generate(input_ids, attention_mask=attention_mask,
-                                           max_new_tokens=max_new_tokens, do_sample=do_sample)
+                                           max_new_tokens=max_new_tokens, do_sample=do_sample, temperature=temperature)
         if torch.cuda.is_available():
             torch.cuda.synchronize(accelerator.device)
 

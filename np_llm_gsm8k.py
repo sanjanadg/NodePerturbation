@@ -689,7 +689,6 @@ def main():
         for seed_idx, seed in local_seeds:
             gen_ids = ids_by_seed_idx[seed_idx]
             if gen_ids is None:
-                print("reached gen_ids None")
                 continue
             grad_scale = float(rewards_normalized[seed_idx]) / float(POPULATION_SIZE)
             
