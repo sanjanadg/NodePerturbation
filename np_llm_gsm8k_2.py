@@ -609,7 +609,7 @@ def main():
     else:
         pbar = range(NUM_ITERATIONS)
 
-    for iteration in pbar:
+    for (i, iteration) in enumerate(pbar):
         iter_start_time = time.time()
         force_memory_cleanup()
 
@@ -675,7 +675,7 @@ def main():
 
         ## testing to see if the issue is that the reward variance is still too low
         iter_rewards, iter_counts = np.unique(rewards, return_counts=True)
-        print("Unique rewards and their counts:")
+        print("[UNIQUE REWARDS:]")
         print(dict(zip(iter_rewards, iter_counts)))
 
         del all_rewards
@@ -691,6 +691,17 @@ def main():
         # Normalize rewards (unchanged)
         rewards_tensor = np.array(rewards, dtype=np.float32)
         rewards_normalized = (rewards_tensor - rewards_tensor.mean()) / (rewards_tensor.std() + 1e-8)
+
+        ## testing to see if the issue is that the reward variance is still too low --> with the normalized reward
+        iter_rewards_normalized, iter_counts_normalized = np.unique(rewards_tensor, return_counts=True)
+        print("[UNIQUE REWARDS - NORMALIZED:]")
+        print(dict(zip(iter_rewards_normalized, iter_counts_normalized)))
+
+        # cheecking to see if std = 0.03
+        if i == 1 or i == 2:
+            print("mean reward:", rewards.mean())
+            print("reward std:", rewards.std())
+            print("min/max:", rewards.min(), rewards.max())
 
         # ---------- NP UPDATE (only part that differs from WP) ----------
         original_model = accelerator.unwrap_model(model_list[0])
