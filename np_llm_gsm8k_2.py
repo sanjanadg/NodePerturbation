@@ -693,7 +693,7 @@ def main():
         rewards_normalized = (rewards_tensor - rewards_tensor.mean()) / (rewards_tensor.std() + 1e-8)
 
         ## testing to see if the issue is that the reward variance is still too low --> with the normalized reward
-        iter_rewards_normalized, iter_counts_normalized = np.unique(rewards_tensor, return_counts=True)
+        iter_rewards_normalized, iter_counts_normalized = np.unique(rewards_normalized, return_counts=True)
         print("[UNIQUE REWARDS - NORMALIZED:]")
         print(dict(zip(iter_rewards_normalized, iter_counts_normalized)))
 
