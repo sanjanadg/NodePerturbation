@@ -699,9 +699,9 @@ def main():
 
         # cheecking to see if std = 0.03
         if i == 1 or i == 2:
-            print("mean reward:", rewards.mean())
-            print("reward std:", rewards.std())
-            print("min/max:", rewards.min(), rewards.max())
+            print("mean reward:", rewards_tensor.mean())
+            print("reward std:", rewards_tensor.std())
+            print("min/max:", rewards_tensor.min(), rewards_tensor.max())
 
         # ---------- NP UPDATE (only part that differs from WP) ----------
         original_model = accelerator.unwrap_model(model_list[0])
