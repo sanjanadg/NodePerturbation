@@ -281,6 +281,31 @@ class _NPActivationHook:
         self._grad_scale = float(grad_scale)
         for name, mod in self._targets:
             self._wrap(name, mod)
+        
+        ## Added to support the lm_head logic
+        if self.include in ("head","all") and hasattr(self.model,"lm_head"):
+            mod = self.model.lm_head
+            if hasattr(mod,"weight") and mod not in [m for _,m in self._targets]:
+                self._targets.append(("lm_head", mod))
+                self._row_counters["lm_head"] = 0
+                self._layer_uids["lm_head"] = _stable_uid("lm_head")
+                if self._first_layer is None:
+                    self._first_layer = "lm_head"
+        
+        ## Handle tied embeddings if lm_head is tied
+        if self.include in ("head", "all") and hasattr(self.model, "model") and hasattr(self.model.model, "embed_tokens"):
+            embed_mod = self.model.model.embed_tokens
+            if hasattr(embed_mod, "weight") and embed_mod not in [m for _, m in self._targets]:
+                self._targets.append(("embed_tokens", embed_mod))
+                self._row_counters["embed_tokens"] = 0
+                self._layer_uids["embed_tokens"] = _stable_uid("embed_tokens")
+                if self._first_layer is None:
+                    self._first_layer = "embed_tokens"
+        
+        ## to help w debugging
+        print("=== NP Hooked Layers ===")
+        for name, _ in self._targets:
+            print(name)
 
     def detach(self):
         for name, mod in self._targets:
@@ -799,18 +824,27 @@ def main():
                 if p.grad is not None:
                     dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
 
+        # check to see which grads are not given
+        for name, p in _named_linear_params(original_model, include=args.np_include, last_k=args.last_k):
+            if p.grad is None:
+                print(f"[WARN] No grad for {name}")
+            else:
+                print(f"{name} grad norm: {p.grad.norm().item()}")
+
         # Normalized global step (stable step size)
         params = [p for _, p in _named_linear_params(original_model, include=args.np_include, last_k=args.last_k) if p.grad is not None]
         if params:
             with torch.no_grad():
                 total = torch.zeros([], device=params[0].device, dtype=torch.float32)
                 for p in params:
-                    total += (p.grad.float().norm(2) ** 2)
+                    if p.grad is not None: # to ensure there is no crash
+                        total += (p.grad.float().norm(2) ** 2)
                 gnorm = total.sqrt().clamp_min(1e-12)
                 step_scale = ALPHA / gnorm  
                 for p in params:
-                    p.add_(step_scale * p.grad)  # ascent
-                    p.grad = None
+                    if p.grad is not None: # to ensure there is no crash
+                        p.add_(step_scale * p.grad)  # ascent
+                        p.grad = None
 
         # Copy weights to other replicas (unchanged)
         for model_idx in range(1, len(model_list)):
