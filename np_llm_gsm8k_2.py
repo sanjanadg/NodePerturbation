@@ -103,7 +103,7 @@ POPULATION_SIZE = args.pop_size
 SIGMA = args.sigma
 ALPHA = args.alpha
 max_new_tokens = 256
-do_sample = True  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
+do_sample = False  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
 temperature = 1.0
 
 # -------------------- Dataset (unchanged) --------------------
@@ -581,9 +581,9 @@ def main():
         )
 
         ## testing to see if the issue is that the reward variance is still too low
-        baseline_unique, baseline_counts = np.unique(train_rewards, return_counts=True)
-        print("Unique rewards and their counts (baseline):")
-        print(dict(zip(baseline_unique, baseline_counts)))
+        # baseline_unique, baseline_counts = np.unique(train_rewards, return_counts=True)
+        # print("Unique rewards and their counts (baseline):")
+        # print(dict(zip(baseline_unique, baseline_counts)))
 
         baseline_train = float(np.mean(train_rewards))
         baseline_eval = float(np.mean(eval_rewards))
@@ -675,8 +675,7 @@ def main():
 
         ## testing to see if the issue is that the reward variance is still too low
         iter_rewards, iter_counts = np.unique(rewards, return_counts=True)
-        print("[UNIQUE REWARDS:]")
-        print(dict(zip(iter_rewards, iter_counts)))
+        print(f"[UNIQUE REWARDS] {dict(zip(iter_rewards, iter_counts))}")
 
         del all_rewards
         force_memory_cleanup()
@@ -694,14 +693,12 @@ def main():
 
         ## testing to see if the issue is that the reward variance is still too low --> with the normalized reward
         iter_rewards_normalized, iter_counts_normalized = np.unique(rewards_normalized, return_counts=True)
-        print("[UNIQUE REWARDS - NORMALIZED:]")
-        print(dict(zip(iter_rewards_normalized, iter_counts_normalized)))
+        print(f"[UNIQUE NORMALIZED REWARDS] {dict(zip(iter_rewards_normalized, iter_counts_normalized))}")
 
-        # cheecking to see if std = 0.03
-        if i == 1 or i == 2:
-            print("mean reward:", rewards_tensor.mean())
-            print("reward std:", rewards_tensor.std())
-            print("min/max:", rewards_tensor.min(), rewards_tensor.max())
+        # checking reward variance
+        # print("mean reward:", rewards_tensor.mean())
+        print("[REWARD STD]", rewards_tensor.std())
+        # print("min/max:", rewards_tensor.min(), rewards_tensor.max())
 
         # ---------- NP UPDATE (only part that differs from WP) ----------
         original_model = accelerator.unwrap_model(model_list[0])
