@@ -352,14 +352,36 @@ class _NPActivationHook:
         mod.forward = fwd
         self._orig[name] = orig
 
+# def _named_linear_params(model, include, last_k):
+#     total_blocks = _infer_total_blocks(model)
+#     for name, mod in model.named_modules():
+#         if _is_target_linear(include, name, mod, last_k, total_blocks):
+#             if getattr(mod, "weight", None) is not None:
+#                 yield name + ".weight", mod.weight
+#             if getattr(mod, "bias", None) is not None:
+#                 yield name + ".bias", mod.bias
+
 def _named_linear_params(model, include, last_k):
     total_blocks = _infer_total_blocks(model)
+
+    # 1) Linear modules (what is already done)
     for name, mod in model.named_modules():
         if _is_target_linear(include, name, mod, last_k, total_blocks):
             if getattr(mod, "weight", None) is not None:
                 yield name + ".weight", mod.weight
             if getattr(mod, "bias", None) is not None:
                 yield name + ".bias", mod.bias
+
+    # 2) EXPLICIT output head handling
+    if include in ("head", "all"):
+        # lm_head if present
+        if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
+            yield "lm_head.weight", model.lm_head.weight
+
+        # tied embeddings (Qwen, LLaMA-style)
+        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+            yield "model.embed_tokens.weight", model.model.embed_tokens.weight
+
 
 # ---------- Cache utilities for Qwen2 compatibility ----------
 def to_dynamic_cache(pkv):
@@ -537,6 +559,8 @@ def main():
     model_name = args.model_name
     hf_cache_dir = args.hf_cache_dir
 
+    
+
     if accelerator.is_main_process:
         print(f"Loading model {model_name}...")
 
@@ -561,6 +585,18 @@ def main():
     for i in range(len(model_list)):
         model_list[i].eval()
         model_list[i] = accelerator.prepare(model_list[i])
+    
+    # checking if NP affects logits
+    # if accelerator.is_main_process:
+    #     print("\n=== NP PARAMETER CANDIDATES ===")
+    #     unwrapped = accelerator.unwrap_model(model_list[0])
+    #     for name, p in _named_linear_params(
+    #         unwrapped,
+    #         include=args.np_include,
+    #         last_k=args.last_k
+    #     ):
+    #         print(name, p.shape)
+    #     print("=== END NP PARAMS ===\n")
 
     force_memory_cleanup()
 
