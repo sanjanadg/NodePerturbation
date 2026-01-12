@@ -303,9 +303,9 @@ class _NPActivationHook:
                     self._first_layer = "embed_tokens"
         
         ## to help w debugging
-        print("=== NP Hooked Layers ===")
-        for name, _ in self._targets:
-            print(name)
+        # print("=== NP Hooked Layers ===")
+        # for name, _ in self._targets:
+        #     print(name)
 
     def detach(self):
         for name, mod in self._targets:
@@ -435,14 +435,22 @@ def cache_index_select(cache, indices, device):
 def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, seed,
                                      include, last_k, grad_scale,
                                      parity_enable=False, parity_limit=20):
-    """
-    Exact parity with HF generate():
-    1. One batched prefill over prompts
-    2. Token-by-token decoding with KV cache
-    3. Batch shrinking as sequences finish
+    # """
+    # Exact parity with HF generate():
+    # 1. One batched prefill over prompts
+    # 2. Token-by-token decoding with KV cache
+    # 3. Batch shrinking as sequences finish
     
-    Uses exact token IDs from Pass A (no re-encoding) to ensure perfect parity.
+    # Uses exact token IDs from Pass A (no re-encoding) to ensure perfect parity.
+    # """
+
     """
+    Deterministic NP replay:
+    1. One batched prefill over prompts (no grad)
+    2. Token-by-token decoding with KV cache
+    3. Counterfactual sampling under fixed RNG seed
+    """
+
     base = accelerator.unwrap_model(model)
     device = accelerator.device
 
@@ -467,52 +475,85 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
         B = len(gen_ids)
         
         # Extract continuation tokens from exact IDs generated in Pass A
-        cont_tokens = []
-        for i, ids in enumerate(gen_ids):
-            ids_tensor = ids.to(device) if not ids.is_cuda else ids
-            li = prm_len[i]
-            cont_tokens.append(ids_tensor[li:])  # exact continuation tokens from A --> ** no counterfactual trajectories, NP degenerates
+        # cont_tokens = []
+        # for i, ids in enumerate(gen_ids):
+        #     ids_tensor = ids.to(device) if not ids.is_cuda else ids
+        #     li = prm_len[i]
+        #     cont_tokens.append(ids_tensor[li:])  # exact continuation tokens from A --> ** no counterfactual trajectories, NP degenerates
+
         
         with torch.no_grad():
             # Step 1: Batched prefill over all prompts
             out = base(input_ids=prm_ids, attention_mask=prm_mask, use_cache=True, output_hidden_states=False)
             past = to_dynamic_cache(out.past_key_values)
             
-            # Step 2: Token-by-token decoding with batch shrinking
-            active_idx = [i for i in range(B) if cont_tokens[i].numel() > 0]
-            if len(active_idx) == 0:
-                return
+            # # Step 2: Token-by-token decoding with batch shrinking
+            # active_idx = [i for i in range(B) if cont_tokens[i].numel() > 0]
+            # if len(active_idx) == 0:
+            #     return
             
-            past_active = cache_index_select(past, active_idx, device)
-            cont_lists = [cont_tokens[i] for i in active_idx]
-            cursors = [0] * len(active_idx)
+            # past_active = cache_index_select(past, active_idx, device)
+            # cont_lists = [cont_tokens[i] for i in active_idx]
+            # cursors = [0] * len(active_idx)
             
-            while len(active_idx) > 0:
-                # Next token for each active sequence
-                next_ids = torch.stack([cont_lists[j][cursors[j]] for j in range(len(active_idx))], dim=0).unsqueeze(1)
+            # while len(active_idx) > 0:
+            #     # Next token for each active sequence
+            #     next_ids = torch.stack([cont_lists[j][cursors[j]] for j in range(len(active_idx))], dim=0).unsqueeze(1)
                 
-                out = base(input_ids=next_ids, past_key_values=past_active, use_cache=True, output_hidden_states=False)
-                past_new = to_dynamic_cache(out.past_key_values)
+            #     out = base(input_ids=next_ids, past_key_values=past_active, use_cache=True, output_hidden_states=False)
+            #     past_new = to_dynamic_cache(out.past_key_values)
                 
-                # Update cursors and find finished sequences
-                finished = []
-                for j in range(len(active_idx)):
-                    cursors[j] += 1
-                    if cursors[j] >= cont_lists[j].numel():
-                        finished.append(j)
+            #     # Update cursors and find finished sequences
+            #     finished = []
+            #     for j in range(len(active_idx)):
+            #         cursors[j] += 1
+            #         if cursors[j] >= cont_lists[j].numel():
+            #             finished.append(j)
                 
-                # Shrink batch by removing finished sequences
-                if finished:
-                    keep = [j for j in range(len(active_idx)) if j not in finished]
-                    if keep:
-                        past_active = cache_index_select(past_new, keep, device)
-                        active_idx = [active_idx[j] for j in keep]
-                        cont_lists = [cont_lists[j] for j in keep]
-                        cursors = [cursors[j] for j in keep]
-                    else:
-                        break
-                else:
-                    past_active = past_new
+            #     # Shrink batch by removing finished sequences
+            #     if finished:
+            #         keep = [j for j in range(len(active_idx)) if j not in finished]
+            #         if keep:
+            #             past_active = cache_index_select(past_new, keep, device)
+            #             active_idx = [active_idx[j] for j in keep]
+            #             cont_lists = [cont_lists[j] for j in keep]
+            #             cursors = [cursors[j] for j in keep]
+            #         else:
+            #             break
+            #     else:
+            #         past_active = past_new
+            
+        # Step 2: Token-by-token decoding WITH resampling (NP-compatible)
+        # active_idx = list(range(prm_ids.size(0)))
+        past_active = past
+
+        # IMPORTANT: reseed torch RNG for deterministic-but-counterfactual sampling
+        torch.manual_seed(int(seed))
+        torch.cuda.manual_seed_all(int(seed))
+
+        max_new_tokens = gen_ids[0].numel() - prm_len[0]  # same length as Pass A
+
+        for _ in range(max_new_tokens):
+            next_logits = base(
+                input_ids=None,
+                past_key_values=past_active,
+                use_cache=True,
+                output_hidden_states=False,
+            ).logits[:, -1, :]
+
+            # --- sampling (minimal stochasticity) ---
+            # multinomal sampling (not greedy)
+            probs = torch.softmax(next_logits, dim=-1)
+            next_ids = torch.multinomial(probs, num_samples=1)
+
+            out = base(
+                input_ids=next_ids,
+                past_key_values=past_active,
+                use_cache=True,
+                output_hidden_states=False,
+            )
+
+            past_active = to_dynamic_cache(out.past_key_values)
                     
     finally:
         hook.detach()
