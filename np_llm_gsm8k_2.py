@@ -535,11 +535,10 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
 
         for _ in range(max_new_tokens):
             next_logits = base(
-                input_ids=None,
-                past_key_values=past_active,
-                use_cache=True,
-                output_hidden_states=False,
-            ).logits[:, -1, :]
+            input_ids=next_ids,   # <-- previous token
+            past_key_values=past_active,
+            use_cache=True,
+        ).logits[:, -1, :]
 
             # --- sampling (minimal stochasticity) ---
             # multinomal sampling (not greedy)
