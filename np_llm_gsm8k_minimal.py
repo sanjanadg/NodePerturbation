@@ -3,10 +3,7 @@ import random
 import numpy as np
 import torch
 from torch import nn
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from accelerate import Accelerator
 from datasets import load_dataset
 
@@ -28,7 +25,10 @@ def gsm8k_reward(outputs, answers):
     preds = []
     for out in outputs:
         text = out
-        nums = [x for x in text.replace(",", "").split() if x.replace(".", "").isdigit()]
+        nums = [
+            x for x in text.replace(",", "").split()
+            if x.replace(".", "").isdigit()
+        ]
         preds.append(nums[-1] if nums else "")
 
     correct = sum(p == a for p, a in zip(preds, answers))
@@ -75,17 +75,21 @@ class NPActivationHook:
 
     def _hook_fn(self, module):
         def hook(module, inp, out):
+            noise = torch.randn_like(out) * self.sigma
+
             if not self.track:
-                noise = torch.randn_like(out) * self.sigma
                 return out + noise
 
-            # NP gradient estimator
-            noise = torch.randn_like(out) * self.sigma
+            # --- Node Perturbation gradient estimator ---
             x = inp[0].detach()
+
             if module.weight.grad is None:
                 module.weight.grad = torch.zeros_like(module.weight)
 
-            grad_w = noise.reshape(-1, noise.size(-1)).T @ x.reshape(-1, x.size(-1))
+            grad_w = (
+                noise.reshape(-1, noise.size(-1)).T
+                @ x.reshape(-1, x.size(-1))
+            )
             module.weight.grad.add_(self.grad_scale * grad_w)
 
             if module.bias is not None:
@@ -94,13 +98,13 @@ class NPActivationHook:
                 module.bias.grad.add_(self.grad_scale * noise.sum(dim=0))
 
             return out + noise
+
         return hook
 
 # ----------------------------
-# NP generation
+# NP-compatible generation
 # ----------------------------
 
-@torch.no_grad()
 def np_generate(model, tokenizer, prompts, seed, max_new_tokens, temperature):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -112,15 +116,32 @@ def np_generate(model, tokenizer, prompts, seed, max_new_tokens, temperature):
         padding_side="left",
     ).to(model.device)
 
-    out = model.generate(
-        **toks,
-        do_sample=True,
-        temperature=temperature,
-        max_new_tokens=max_new_tokens,
-        use_cache=True,
-    )
+    input_ids = toks["input_ids"]
+    attention_mask = toks["attention_mask"]
 
-    return tokenizer.batch_decode(out, skip_special_tokens=True)
+    generated = input_ids
+    past = None
+
+    for _ in range(max_new_tokens):
+        out = model(
+            input_ids=generated[:, -1:] if past is not None else generated,
+            attention_mask=attention_mask,
+            past_key_values=past,
+            use_cache=True,
+        )
+
+        logits = out.logits[:, -1, :] / temperature
+        probs = torch.softmax(logits, dim=-1)
+        next_ids = torch.multinomial(probs, num_samples=1)
+
+        generated = torch.cat([generated, next_ids], dim=1)
+        attention_mask = torch.cat(
+            [attention_mask, torch.ones_like(next_ids)], dim=1
+        )
+
+        past = out.past_key_values
+
+    return tokenizer.batch_decode(generated, skip_special_tokens=True)
 
 # ----------------------------
 # Main
@@ -155,9 +176,17 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.pad_token = tokenizer.eos_token
+
     model.eval()
+    for m in model.modules():
+        if isinstance(m, nn.Dropout):
+            m.p = 0.0
 
     model = accelerator.prepare(model)
+
+    # ----------------------------
+    # Training loop
+    # ----------------------------
 
     for it in range(args.iters):
         rewards = []
@@ -166,15 +195,21 @@ def main():
         # ---------- Pass A ----------
         for i in range(args.pop_size):
             seed_i = args.seed + it * 1000 + i
+
             hook = NPActivationHook(model, args.np_include, args.sigma, seed_i)
             hook.attach(track=False)
 
             outs = np_generate(
-                model, tokenizer, prompts,
-                seed_i, args.max_new_tokens, args.temperature
+                model,
+                tokenizer,
+                prompts,
+                seed_i,
+                args.max_new_tokens,
+                args.temperature,
             )
 
             hook.detach()
+
             r = gsm8k_reward(outs, answers)
             rewards.append(r)
             seeds.append(seed_i)
@@ -182,7 +217,9 @@ def main():
         rewards = torch.tensor(rewards, device=model.device)
         std = rewards.std().item()
 
-        print(f"[iter {it}] mean={rewards.mean():.3f} std={std:.4f}")
+        accelerator.print(
+            f"[iter {it}] mean={rewards.mean():.3f} std={std:.4f}"
+        )
 
         if std == 0.0:
             continue
@@ -190,13 +227,21 @@ def main():
         rewards = (rewards - rewards.mean()) / (std + 1e-8)
 
         # ---------- Pass B ----------
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.zero_()
+
         for seed_i, r in zip(seeds, rewards):
             hook = NPActivationHook(model, args.np_include, args.sigma, seed_i)
             hook.attach(track=True, grad_scale=r.item())
 
             _ = np_generate(
-                model, tokenizer, prompts,
-                seed_i, args.max_new_tokens, args.temperature
+                model,
+                tokenizer,
+                prompts,
+                seed_i,
+                args.max_new_tokens,
+                args.temperature,
             )
 
             hook.detach()
