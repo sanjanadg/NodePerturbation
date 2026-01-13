@@ -1,0 +1,124 @@
+The following values were not passed to `accelerate launch` and had defaults used instead:
+	`--num_machines` was set to a value of `1`
+	`--mixed_precision` was set to a value of `'no'`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Loading GSM8K dataset...
+Loaded 64 train samples, 100 eval samples
+Detected kernel version 4.18.0, which is below the recommended minimum of 5.5.0; this can cause the process to hang. It is recommended to upgrade the kernel to the minimum version or higher.
+Meta seed: 42
+Total GPUs: 1, Threads per GPU: 1
+Using mixed precision: bf16
+Population size: 30, Iterations: 100
+Sigma: 0.005, Alpha: 0.001
+Train samples: 64, Eval samples: 100
+Expected evaluations per iteration: 30 (distributed across 1 GPUs)
+Loading model Qwen/Qwen2.5-1.5B-Instruct...
+Model loaded successfully
+[BASELINE] train_acc=0.219 eval_acc=0.230
+ES Training:   0%|                                                                                                                                                 | 0/100 [00:00<?, ?it/s]
+[PARITY] PASS: first-layer call trace (A vs B) matches for 20 calls.
+[ES] iter=000 Time: 409.5s | TRAIN: 0.242 | EVAL: 0.210 | Min: 0.203, Max: 0.281                                                                                                           
+[ES] iter=001 Time: 410.4s | TRAIN: 0.240 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=002 Time: 410.2s | TRAIN: 0.243 | Min: 0.188, Max: 0.281                                                                                                                         
+[ES] iter=003 Time: 409.6s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=004 Time: 409.1s | TRAIN: 0.239 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=005 Time: 409.3s | TRAIN: 0.237 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=006 Time: 411.8s | TRAIN: 0.236 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=007 Time: 413.2s | TRAIN: 0.238 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=008 Time: 412.6s | TRAIN: 0.244 | Min: 0.219, Max: 0.312                                                                                                                         
+[ES] iter=009 Time: 413.1s | TRAIN: 0.249 | Min: 0.219, Max: 0.312                                                                                                                         
+[ES] iter=010 Time: 413.3s | TRAIN: 0.241 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=011 Time: 412.8s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=012 Time: 410.4s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=013 Time: 407.2s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=014 Time: 405.3s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=015 Time: 408.8s | TRAIN: 0.235 | Min: 0.188, Max: 0.266                                                                                                                         
+[ES] iter=016 Time: 412.3s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=017 Time: 412.6s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=018 Time: 412.6s | TRAIN: 0.241 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=019 Time: 412.1s | TRAIN: 0.244 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=020 Time: 409.3s | TRAIN: 0.238 | EVAL: 0.210 | Min: 0.203, Max: 0.266                                                                                                           
+[ES] iter=021 Time: 407.7s | TRAIN: 0.242 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=022 Time: 404.7s | TRAIN: 0.240 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=023 Time: 403.2s | TRAIN: 0.232 | Min: 0.188, Max: 0.250                                                                                                                         
+[ES] iter=024 Time: 401.0s | TRAIN: 0.235 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=025 Time: 402.2s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=026 Time: 402.0s | TRAIN: 0.235 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=027 Time: 400.0s | TRAIN: 0.240 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=028 Time: 391.6s | TRAIN: 0.235 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=029 Time: 403.9s | TRAIN: 0.234 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=030 Time: 404.7s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=031 Time: 404.6s | TRAIN: 0.241 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=032 Time: 404.9s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=033 Time: 404.0s | TRAIN: 0.240 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=034 Time: 404.1s | TRAIN: 0.235 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=035 Time: 403.9s | TRAIN: 0.237 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=036 Time: 403.0s | TRAIN: 0.241 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=037 Time: 403.7s | TRAIN: 0.239 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=038 Time: 402.9s | TRAIN: 0.239 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=039 Time: 403.1s | TRAIN: 0.246 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=040 Time: 405.4s | TRAIN: 0.243 | EVAL: 0.200 | Min: 0.219, Max: 0.281                                                                                                           
+[ES] iter=041 Time: 397.8s | TRAIN: 0.245 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=042 Time: 390.5s | TRAIN: 0.234 | Min: 0.203, Max: 0.250                                                                                                                         
+[ES] iter=043 Time: 390.7s | TRAIN: 0.242 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=044 Time: 390.5s | TRAIN: 0.234 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=045 Time: 390.5s | TRAIN: 0.239 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=046 Time: 398.7s | TRAIN: 0.242 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=047 Time: 403.1s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=048 Time: 402.3s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=049 Time: 405.7s | TRAIN: 0.243 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=050 Time: 398.7s | TRAIN: 0.237 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=051 Time: 404.3s | TRAIN: 0.237 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=052 Time: 403.6s | TRAIN: 0.235 | Min: 0.203, Max: 0.312                                                                                                                         
+[ES] iter=053 Time: 403.7s | TRAIN: 0.238 | Min: 0.188, Max: 0.297                                                                                                                         
+[ES] iter=054 Time: 403.4s | TRAIN: 0.241 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=055 Time: 393.2s | TRAIN: 0.243 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=056 Time: 404.0s | TRAIN: 0.240 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=057 Time: 405.1s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=058 Time: 400.4s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=059 Time: 400.5s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=060 Time: 401.3s | TRAIN: 0.233 | EVAL: 0.200 | Min: 0.203, Max: 0.281                                                                                                           
+[ES] iter=061 Time: 399.5s | TRAIN: 0.235 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=062 Time: 392.4s | TRAIN: 0.244 | Min: 0.219, Max: 0.297                                                                                                                         
+[ES] iter=063 Time: 403.8s | TRAIN: 0.243 | Min: 0.188, Max: 0.297                                                                                                                         
+[ES] iter=064 Time: 403.8s | TRAIN: 0.237 | Min: 0.203, Max: 0.312                                                                                                                         
+[ES] iter=065 Time: 401.8s | TRAIN: 0.238 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=066 Time: 395.3s | TRAIN: 0.236 | Min: 0.188, Max: 0.266                                                                                                                         
+[ES] iter=067 Time: 402.3s | TRAIN: 0.235 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=068 Time: 401.4s | TRAIN: 0.237 | Min: 0.188, Max: 0.281                                                                                                                         
+[ES] iter=069 Time: 401.4s | TRAIN: 0.237 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=070 Time: 405.6s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=071 Time: 404.8s | TRAIN: 0.235 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=072 Time: 404.0s | TRAIN: 0.238 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=073 Time: 392.9s | TRAIN: 0.235 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=074 Time: 391.6s | TRAIN: 0.236 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=075 Time: 391.4s | TRAIN: 0.235 | Min: 0.188, Max: 0.281                                                                                                                         
+[ES] iter=076 Time: 388.8s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=077 Time: 391.2s | TRAIN: 0.240 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=078 Time: 391.2s | TRAIN: 0.241 | Min: 0.188, Max: 0.266                                                                                                                         
+[ES] iter=079 Time: 391.1s | TRAIN: 0.235 | Min: 0.188, Max: 0.266                                                                                                                         
+[ES] iter=080 Time: 391.4s | TRAIN: 0.240 | EVAL: 0.220 | Min: 0.203, Max: 0.266                                                                                                           
+[ES] iter=081 Time: 391.5s | TRAIN: 0.239 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=082 Time: 391.4s | TRAIN: 0.233 | Min: 0.188, Max: 0.281                                                                                                                         
+[ES] iter=083 Time: 391.2s | TRAIN: 0.241 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=084 Time: 391.4s | TRAIN: 0.239 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=085 Time: 391.4s | TRAIN: 0.237 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=086 Time: 391.3s | TRAIN: 0.236 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=087 Time: 391.5s | TRAIN: 0.246 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=088 Time: 391.4s | TRAIN: 0.243 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=089 Time: 391.0s | TRAIN: 0.242 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=090 Time: 391.2s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=091 Time: 390.4s | TRAIN: 0.233 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=092 Time: 388.4s | TRAIN: 0.239 | Min: 0.219, Max: 0.281                                                                                                                         
+[ES] iter=093 Time: 390.6s | TRAIN: 0.240 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=094 Time: 390.4s | TRAIN: 0.237 | Min: 0.203, Max: 0.281                                                                                                                         
+[ES] iter=095 Time: 390.7s | TRAIN: 0.233 | Min: 0.203, Max: 0.297                                                                                                                         
+[ES] iter=096 Time: 390.8s | TRAIN: 0.240 | Min: 0.203, Max: 0.266                                                                                                                         
+[ES] iter=097 Time: 391.1s | TRAIN: 0.241 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=098 Time: 391.0s | TRAIN: 0.233 | Min: 0.219, Max: 0.266                                                                                                                         
+[ES] iter=099 Time: 390.7s | TRAIN: 0.239 | Min: 0.219, Max: 0.266                                                                                                                         
+ES Training: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 100/100 [11:08:22<00:00, 401.02s/it]
+Training completed in 40102.48s (668.37 minutes)
+Saving model to ./out_np_gsm8k/final_model...
+Model saved successfully.
