@@ -103,7 +103,7 @@ POPULATION_SIZE = args.pop_size
 SIGMA = args.sigma
 ALPHA = args.alpha
 max_new_tokens = 256
-do_sample = False  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
+do_sample = True  # keep greedy like WP --> **but greedy decoding kills NP signal. small activation noise almost never changes the selected token.
 temperature = 1.0
 
 # -------------------- Dataset (unchanged) --------------------
