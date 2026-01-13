@@ -403,9 +403,9 @@ def _named_linear_params(model, include, last_k):
         if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
             yield "lm_head.weight", model.lm_head.weight
 
-        # tied embeddings (Qwen, LLaMA-style)
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-            yield "model.embed_tokens.weight", model.model.embed_tokens.weight
+        # tied embeddings (Qwen, LLaMA-style) --> don't do the embeddings again.
+        # if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+        #     yield "model.embed_tokens.weight", model.model.embed_tokens.weight
 
 
 # ---------- Cache utilities for Qwen2 compatibility ----------
@@ -486,65 +486,21 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
             # Step 1: Batched prefill over all prompts
             out = base(input_ids=prm_ids, attention_mask=prm_mask, use_cache=True, output_hidden_states=False)
             past = to_dynamic_cache(out.past_key_values)
-            
-            # # Step 2: Token-by-token decoding with batch shrinking
-            # active_idx = [i for i in range(B) if cont_tokens[i].numel() > 0]
-            # if len(active_idx) == 0:
-            #     return
-            
-            # past_active = cache_index_select(past, active_idx, device)
-            # cont_lists = [cont_tokens[i] for i in active_idx]
-            # cursors = [0] * len(active_idx)
-            
-            # while len(active_idx) > 0:
-            #     # Next token for each active sequence
-            #     next_ids = torch.stack([cont_lists[j][cursors[j]] for j in range(len(active_idx))], dim=0).unsqueeze(1)
-                
-            #     out = base(input_ids=next_ids, past_key_values=past_active, use_cache=True, output_hidden_states=False)
-            #     past_new = to_dynamic_cache(out.past_key_values)
-                
-            #     # Update cursors and find finished sequences
-            #     finished = []
-            #     for j in range(len(active_idx)):
-            #         cursors[j] += 1
-            #         if cursors[j] >= cont_lists[j].numel():
-            #             finished.append(j)
-                
-            #     # Shrink batch by removing finished sequences
-            #     if finished:
-            #         keep = [j for j in range(len(active_idx)) if j not in finished]
-            #         if keep:
-            #             past_active = cache_index_select(past_new, keep, device)
-            #             active_idx = [active_idx[j] for j in keep]
-            #             cont_lists = [cont_lists[j] for j in keep]
-            #             cursors = [cursors[j] for j in keep]
-            #         else:
-            #             break
-            #     else:
-            #         past_active = past_new
-            
-        # Step 2: Token-by-token decoding WITH resampling (NP-compatible)
-        # active_idx = list(range(prm_ids.size(0)))
+
+        # Step 2: Token-by-token decoding WITH counterfactual sampling
         past_active = past
 
-        # IMPORTANT: reseed torch RNG for deterministic-but-counterfactual sampling
+        # Deterministic but counterfactual
         torch.manual_seed(int(seed))
         torch.cuda.manual_seed_all(int(seed))
 
-        max_new_tokens = gen_ids[0].numel() - prm_len[0]  # same length as Pass A
+        # Match Pass-A length (important)
+        max_new_tokens = gen_ids[0].numel() - prm_len[0]
+
+        # IMPORTANT: first step has NO input_ids (prefill already done)
+        next_ids = None
 
         for _ in range(max_new_tokens):
-            next_logits = base(
-            input_ids=next_ids,   # <-- previous token
-            past_key_values=past_active,
-            use_cache=True,
-        ).logits[:, -1, :]
-
-            # --- sampling (minimal stochasticity) ---
-            # multinomal sampling (not greedy)
-            probs = torch.softmax(next_logits, dim=-1)
-            next_ids = torch.multinomial(probs, num_samples=1)
-
             out = base(
                 input_ids=next_ids,
                 past_key_values=past_active,
@@ -552,7 +508,16 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
                 output_hidden_states=False,
             )
 
+            logits = out.logits[:, -1, :]   # [B, vocab]
             past_active = to_dynamic_cache(out.past_key_values)
+
+            # --- NP-COMPATIBLE TOKEN SELECTION ---
+            # Greedy is too brittle → use very light sampling
+            probs = torch.softmax(logits / 1.0, dim=-1)
+            # probs = torch.softmax(logits / 0.7, dim=-1) --> later if we want minimal stochastisity
+            # next_ids = torch.multinomial(probs, num_samples=1) --> og 
+            next_ids = torch.multinomial(torch.softmax(logits, -1), 1)
+
                     
     finally:
         hook.detach()
