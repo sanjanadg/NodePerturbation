@@ -497,26 +497,29 @@ def _teacher_forced_replay_np_cached(accelerator, model, tokenizer, gen_ids, see
         # Match Pass-A length (important)
         max_new_tokens = gen_ids[0].numel() - prm_len[0]
 
-        # IMPORTANT: first step has NO input_ids (prefill already done)
+        # First decoding step: MUST provide input_ids
         next_ids = None
 
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
+            if step == 0:
+                # First step: feed last prompt token
+                input_ids = prm_ids[:, -1:]
+            else:
+                input_ids = next_ids
+
             out = base(
-                input_ids=next_ids,
+                input_ids=input_ids,
                 past_key_values=past_active,
                 use_cache=True,
                 output_hidden_states=False,
             )
 
-            logits = out.logits[:, -1, :]   # [B, vocab]
+            logits = out.logits[:, -1, :]
             past_active = to_dynamic_cache(out.past_key_values)
 
-            # --- NP-COMPATIBLE TOKEN SELECTION ---
-            # Greedy is too brittle → use very light sampling
+            # NP-compatible stochastic policy
             probs = torch.softmax(logits / 1.0, dim=-1)
-            # probs = torch.softmax(logits / 0.7, dim=-1) --> later if we want minimal stochastisity
-            # next_ids = torch.multinomial(probs, num_samples=1) --> og 
-            next_ids = torch.multinomial(torch.softmax(logits, -1), 1)
+            next_ids = torch.multinomial(probs, num_samples=1)
 
                     
     finally:
