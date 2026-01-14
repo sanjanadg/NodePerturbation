@@ -78,7 +78,6 @@ class DANPMLP:
         x_noisy, a_noisy, eps = self.forward_noisy(x0)
 
         # Loss difference 
-        # just the last layer? is what the alg. calls for MSE?
         L_clean = F.mse_loss(x_clean[-1], target)
         L_noisy = F.mse_loss(x_noisy[-1], target)
         delta_L = (L_noisy - L_clean).item()
@@ -91,7 +90,6 @@ class DANPMLP:
             x_star = self.R[l-1] @ x_clean[l-1]
             outer = torch.outer(delta_a, x_star)
 
-            # what is numel
             N = delta_a.numel()
             self.W[l-1] -= self.eta*N*delta_L*outer/norm
 
