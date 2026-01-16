@@ -117,7 +117,6 @@ class DANPMLP:
 
         return L_clean.item(), delta_L
 
-
 # TRAINING
 def train_danp():
     torch.manual_seed(42)
