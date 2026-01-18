@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from synthetic_trainer import make_teacher
 
 class DANPMLP:
     def __init__(self, layer_sizes, sigma=0.001, eta=1e-3, alpha=1e-4):
@@ -116,52 +115,3 @@ class DANPMLP:
             self.R[l] -= dec_update
 
         return L_clean.item(), delta_L
-
-# TRAINING
-def train_danp():
-    torch.manual_seed(42)
-    input_dim = 10
-    hidden_dim = 32
-    output_dim = 1
-
-    teacher = make_teacher(input_dim, hidden_dim, output_dim)
-    
-    # Try different hyperparameter settings
-    configs = [
-        {"sigma": 0.001, "eta": 1e-3, "alpha": 1e-4, "name": "Default"},
-        {"sigma": 0.005, "eta": 5e-3, "alpha": 5e-4, "name": "Higher LR"},
-        {"sigma": 0.001, "eta": 1e-2, "alpha": 1e-3, "name": "Much Higher LR"},
-    ]
-    
-    for config in configs:
-        print(f"\n{'='*60}")
-        print(f"Config: {config['name']}")
-        print(f"sigma={config['sigma']}, eta={config['eta']}, alpha={config['alpha']}")
-        print(f"{'='*60}")
-        
-        model = DANPMLP(
-            [input_dim, hidden_dim, output_dim],
-            sigma=config['sigma'],
-            eta=config['eta'],
-            alpha=config['alpha']
-        )
-        
-        losses = []
-        for step in range(5000):
-            x = torch.randn(input_dim)
-            with torch.no_grad():
-                y = teacher(x)
-
-            loss, delta_L = model.step(x, y)
-            losses.append(loss)
-            
-            if step % 500 == 0:
-                avg_loss = sum(losses[-100:]) / min(len(losses), 100)
-                print(f"Step {step:5d} | loss {loss:8.4f} | avg_loss {avg_loss:8.4f} | δL {delta_L:8.4f}")
-        
-        final_avg = sum(losses[-100:]) / 100
-        print(f"Final average loss: {final_avg:.6f}")
-
-
-if __name__ == "__main__":
-    train_danp()
