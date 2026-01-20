@@ -6,41 +6,41 @@ Training BP model...
 --------------------------------------------------------------------------------
 BP batch size: 1
 Samples per epoch BP: 4000
-  Epoch   1/10 | Train Loss: 0.065339 | Test Loss: 0.068283 | Time: 0.413s
-  Epoch   2/10 | Train Loss: 0.041915 | Test Loss: 0.045715 | Time: 0.400s
-  Epoch   3/10 | Train Loss: 0.031324 | Test Loss: 0.034598 | Time: 0.403s
-  Epoch   4/10 | Train Loss: 0.025252 | Test Loss: 0.028037 | Time: 0.401s
-  Epoch   5/10 | Train Loss: 0.021170 | Test Loss: 0.023268 | Time: 0.421s
-  Epoch   6/10 | Train Loss: 0.018029 | Test Loss: 0.019726 | Time: 0.405s
-  Epoch   7/10 | Train Loss: 0.016075 | Test Loss: 0.017512 | Time: 0.402s
-  Epoch   8/10 | Train Loss: 0.014496 | Test Loss: 0.015900 | Time: 0.404s
-  Epoch   9/10 | Train Loss: 0.013354 | Test Loss: 0.014442 | Time: 0.400s
-  Epoch  10/10 | Train Loss: 0.012484 | Test Loss: 0.013511 | Time: 0.397s
+  Epoch   1/10 | Train Loss: 0.089898 | Test Loss: 0.086954 | Time: 0.409s
+  Epoch   2/10 | Train Loss: 0.066057 | Test Loss: 0.063441 | Time: 0.390s
+  Epoch   3/10 | Train Loss: 0.049592 | Test Loss: 0.048474 | Time: 0.392s
+  Epoch   4/10 | Train Loss: 0.038112 | Test Loss: 0.037855 | Time: 0.391s
+  Epoch   5/10 | Train Loss: 0.029691 | Test Loss: 0.029404 | Time: 0.392s
+  Epoch   6/10 | Train Loss: 0.023917 | Test Loss: 0.024524 | Time: 0.393s
+  Epoch   7/10 | Train Loss: 0.019962 | Test Loss: 0.020736 | Time: 0.398s
+  Epoch   8/10 | Train Loss: 0.017320 | Test Loss: 0.018328 | Time: 0.394s
+  Epoch   9/10 | Train Loss: 0.015660 | Test Loss: 0.017012 | Time: 0.397s
+  Epoch  10/10 | Train Loss: 0.014557 | Test Loss: 0.015690 | Time: 0.391s
 
 ================================================================================
 FINAL RESULTS
 ================================================================================
-Final Train Loss: 0.012484
-Final Test Loss:  0.013511
+Final Train Loss: 0.014557
+Final Test Loss:  0.015690
 ================================================================================
 
 --------------------------------------------------------------------------------
 Training DANP model...
 --------------------------------------------------------------------------------
-  Epoch   1/10 | Train Loss: 0.072738 | Test Loss: 0.071228 | Time: 0.448s
-  Epoch   2/10 | Train Loss: 0.045935 | Test Loss: 0.045761 | Time: 0.449s
-  Epoch   3/10 | Train Loss: 0.033767 | Test Loss: 0.033887 | Time: 0.449s
-  Epoch   4/10 | Train Loss: 0.030214 | Test Loss: 0.030273 | Time: 0.447s
-  Epoch   5/10 | Train Loss: 0.027204 | Test Loss: 0.027295 | Time: 0.454s
-  Epoch   6/10 | Train Loss: 0.026403 | Test Loss: 0.027063 | Time: 0.450s
-  Epoch   7/10 | Train Loss: 0.023376 | Test Loss: 0.024234 | Time: 0.453s
-  Epoch   8/10 | Train Loss: 0.021245 | Test Loss: 0.022810 | Time: 0.445s
-  Epoch   9/10 | Train Loss: 0.020963 | Test Loss: 0.022170 | Time: 0.449s
-  Epoch  10/10 | Train Loss: 0.020008 | Test Loss: 0.020697 | Time: 0.448s
+  Epoch   1/10 | Train Loss: 0.034077 | Test Loss: 0.034785 | Time: 0.451s
+  Epoch   2/10 | Train Loss: 0.022847 | Test Loss: 0.023894 | Time: 0.448s
+  Epoch   3/10 | Train Loss: 0.016653 | Test Loss: 0.018210 | Time: 0.464s
+  Epoch   4/10 | Train Loss: 0.013605 | Test Loss: 0.014815 | Time: 0.473s
+  Epoch   5/10 | Train Loss: 0.012100 | Test Loss: 0.013573 | Time: 0.469s
+  Epoch   6/10 | Train Loss: 0.010812 | Test Loss: 0.011978 | Time: 0.468s
+  Epoch   7/10 | Train Loss: 0.009718 | Test Loss: 0.011261 | Time: 0.469s
+  Epoch   8/10 | Train Loss: 0.009024 | Test Loss: 0.010418 | Time: 0.467s
+  Epoch   9/10 | Train Loss: 0.009223 | Test Loss: 0.011015 | Time: 0.472s
+  Epoch  10/10 | Train Loss: 0.008653 | Test Loss: 0.009758 | Time: 0.472s
 
 ================================================================================
 FINAL RESULTS
 ================================================================================
-Final Train Loss: 0.020008
-Final Test Loss:  0.020697
+Final Train Loss: 0.008653
+Final Test Loss:  0.009758
 ================================================================================

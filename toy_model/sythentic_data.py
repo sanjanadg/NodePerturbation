@@ -234,7 +234,7 @@ def train_danp_model(layer_sizes, dataset, n_epochs=50, eta=1e-3, alpha=1e-4,
 
 if __name__ == "__main__":
     # Training examples
-    dataset = SyntheticDataset(10, 48, 1, 5000, 42)
+    dataset = SyntheticDataset(10, 48, 1, 5000, 0)
 
     print("-"*80)
     print("Training BP model...")
