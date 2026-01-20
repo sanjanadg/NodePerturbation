@@ -3,6 +3,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from danp import DANPMLP
 from bp import BPMLP
+import time
+import numpy as np
 
 class SyntheticDataset(Dataset):
     """
@@ -50,138 +52,99 @@ class SyntheticDataset(Dataset):
 
 # TRAINING EXAMPLES WITH DATASETS
 
-def train_bp_with_dataset(input_dim=10, hidden_dim=32, output_dim=1, n_samples=5000, n_epochs=10, eta=1e-3, batch_size=32, train_split=0.8, seed=42):
-    """
-    Train BP model using PyTorch dataset.
+def train_bp_model(layer_sizes, dataset, n_epochs=50, lr=1e-3, batch_size=1, 
+                   train_split=0.8, seed=42, device='cpu'):
+    """Train BP model and return final train and test losses."""
+    torch.manual_seed(seed)
     
-    Args:
-        input_dim: Input dimension
-        hidden_dim: Hidden layer size
-        output_dim: Output dimension
-        n_samples: Total number of samples in dataset
-        n_epochs: Number of training epochs
-        eta: Learning rate
-        batch_size: Batch size
-        train_split: Fraction of data for training
-        seed: Random seed
-    
-    Returns:
-        dict with 'train_losses' and 'test_losses' per epoch
-    """
-    
-    print("\n" + "="*80)
-    print("TRAINING BP WITH SYNTHETIC DATASET")
-    print("="*80)
-    print(f"Dataset size: {n_samples}")
-    print(f"Epochs: {n_epochs}")
-    print(f"Network: {input_dim} → {hidden_dim} → {output_dim}")
-    print(f"η={eta}, batch_size={batch_size}")
-    print("="*80 + "\n")
-    
-    # Create dataset
-    dataset = SyntheticDataset(input_dim, hidden_dim, output_dim, n_samples=n_samples, seed=seed)
-    
-    # Split into train/test
+    # Split dataset
     train_size = int(train_split * len(dataset))
     test_size = len(dataset) - train_size
     train_dataset, test_dataset = torch.utils.data.random_split(
         dataset, [train_size, test_size],
         generator=torch.Generator().manual_seed(seed)
     )
-    
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Test samples: {len(test_dataset)}\n")
+
+    # debugging 
+    print(f"BP batch size: {batch_size}")
+    print(f"Samples per epoch BP: {len(train_dataset)}")
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    model = BPMLP([input_dim, hidden_dim, output_dim])
-    optimizer = torch.optim.SGD(model.parameters(), lr=eta)
     
-    train_losses_per_epoch = []
-    test_losses_per_epoch = []
+    # Create model
+    model = BPMLP(layer_sizes).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     
     # Training loop
+    iteration = 0
+    final_train_loss = None
+    final_test_loss = None
+    
     for epoch in range(n_epochs):
+        epoch_start_time = time.time()
         model.train()
-        train_losses = []
         
         for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             pred = model(x)
             loss = F.mse_loss(pred, y)
             loss.backward()
             optimizer.step()
-            train_losses.append(loss.item())
+            iteration += 1
         
-        avg_train_loss = sum(train_losses) / len(train_losses)
-        train_losses_per_epoch.append(avg_train_loss)
-        
-        # Evaluation
+        # Evaluate on training set (after all updates)
         model.eval()
+        train_losses = []
+        with torch.no_grad():
+            for x, y in train_loader:
+                x, y = x.to(device), y.to(device)
+                pred = model(x)
+                loss = F.mse_loss(pred, y)
+                train_losses.append(loss.item())
+        
+        # Evaluate on test set
         test_losses = []
         with torch.no_grad():
             for x, y in test_loader:
+                x, y = x.to(device), y.to(device)
                 pred = model(x)
                 loss = F.mse_loss(pred, y)
                 test_losses.append(loss.item())
         
-        avg_test_loss = sum(test_losses) / len(test_losses)
-        test_losses_per_epoch.append(avg_test_loss)
+        epoch_time = time.time() - epoch_start_time
+        avg_train = np.mean(train_losses)
+        avg_test = np.mean(test_losses)
         
-        print(f"Epoch {epoch+1:2d}/{n_epochs} | "
-              f"Train Loss: {avg_train_loss:.6f} | "
-              f"Test Loss: {avg_test_loss:.6f}")
+        # Store final epoch losses
+        final_train_loss = avg_train
+        final_test_loss = avg_test
+        
+        # Print epoch progress
+        print(f"  Epoch {epoch+1:3d}/{n_epochs} | Train Loss: {avg_train:.6f} | Test Loss: {avg_test:.6f} | Time: {epoch_time:.3f}s")
     
     # Final summary
     print("\n" + "="*80)
     print("FINAL RESULTS")
     print("="*80)
-    print(f"Final Train Loss: {train_losses_per_epoch[-1]:.6f}")
-    print(f"Final Test Loss:  {test_losses_per_epoch[-1]:.6f}")
+    print(f"Final Train Loss: {final_train_loss:.6f}")
+    print(f"Final Test Loss:  {final_test_loss:.6f}")
     print("="*80 + "\n")
     
     return {
-        'train_losses': train_losses_per_epoch,
-        'test_losses': test_losses_per_epoch,
-        'final_train': train_losses_per_epoch[-1],
-        'final_test': test_losses_per_epoch[-1]
+        'train_losses': train_losses,
+        'test_losses': test_losses,
+        'final_train': final_train_loss,
+        'final_test': final_test_loss
     }
 
-def train_danp_with_dataset(input_dim=10, hidden_dim=32, output_dim=1, n_samples=5000, n_epochs=10, eta=1e-3, alpha=1e-5, sigma=0.001, batch_size=1, train_split=0.8, seed=42):
-    """
-    Train DANP using a fixed synthetic dataset.
+def train_danp_model(layer_sizes, dataset, n_epochs=50, eta=1e-3, alpha=1e-4, 
+                     sigma=0.001, batch_size=1, train_split=0.8, seed=42, device='cpu'):
+    """Train DANP model and return final train and test losses."""
+    torch.manual_seed(seed)
     
-    Args:
-        input_dim: Input dimension
-        hidden_dim: Hidden layer size
-        output_dim: Output dimension
-        n_samples: Total number of samples in dataset
-        n_epochs: Number of training epochs
-        eta: Weight learning rate
-        alpha: Decorrelation learning rate (0 for ANP)
-        sigma: Noise standard deviation
-        batch_size: Batch size (use 1 for DANP)
-        train_split: Fraction of data for training
-        seed: Random seed
-    
-    Returns:
-        dict with 'train_losses' and 'test_losses' per epoch
-    """
-    
-    print("\n" + "="*80)
-    print("TRAINING DANP WITH SYNTHETIC DATASET")
-    print("="*80)
-    print(f"Dataset size: {n_samples}")
-    print(f"Epochs: {n_epochs}")
-    print(f"Network: {input_dim} → {hidden_dim} → {output_dim}")
-    print(f"η={eta}, α={alpha}, σ={sigma}")
-    print("="*80 + "\n")
-    
-    # Create dataset
-    dataset = SyntheticDataset(input_dim, hidden_dim, output_dim, n_samples=n_samples, seed=seed)
-    
-    # Split into train/test
+    # Split dataset
     train_size = int(train_split * len(dataset))
     test_size = len(dataset) - train_size
     train_dataset, test_dataset = torch.utils.data.random_split(
@@ -189,97 +152,116 @@ def train_danp_with_dataset(input_dim=10, hidden_dim=32, output_dim=1, n_samples
         generator=torch.Generator().manual_seed(seed)
     )
     
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Test samples: {len(test_dataset)}\n")
-    
-    # Create dataloaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Create model
-    model = DANPMLP(
-        [input_dim, hidden_dim, output_dim],
-        sigma=sigma,
-        eta=eta,
-        alpha=alpha
-    )
-    
-    train_losses_per_epoch = []
-    test_losses_per_epoch = []
+    model = DANPMLP(layer_sizes, sigma=sigma, eta=eta, alpha=alpha)
+    # Move model parameters to device
+    for i in range(len(model.W)):
+        model.W[i] = model.W[i].to(device)
+    for i in range(len(model.R)):
+        model.R[i] = model.R[i].to(device)
     
     # Training loop
-    for epoch in range(n_epochs):
-        # Training
-        train_losses = []
-        for x, y in train_loader:
-            x = x.squeeze(0)  # Remove batch dimension
-            y = y.squeeze(0)
-            
-            loss, _ = model.step(x, y)
-            train_losses.append(loss)
-        
-        avg_train_loss = sum(train_losses) / len(train_losses)
-        train_losses_per_epoch.append(avg_train_loss)
-        
-        # Evaluation on test set
-        test_losses = []
-        for x, y in test_loader:
-            x = x.squeeze(0)
-            y = y.squeeze(0)
-            
-            # Forward pass only (no updates)
-            x_clean, _ = model.forward_clean(x)
-            loss = F.mse_loss(x_clean[-1], y).item()
-            test_losses.append(loss)
-        
-        avg_test_loss = sum(test_losses) / len(test_losses)
-        test_losses_per_epoch.append(avg_test_loss)
-        
-        print(f"Epoch {epoch+1:2d}/{n_epochs} | "
-              f"Train Loss: {avg_train_loss:.6f} | "
-              f"Test Loss: {avg_test_loss:.6f}")
+    final_train_loss = None
+    final_test_loss = None
     
+    for epoch in range(n_epochs):
+        epoch_start_time = time.time()
+        
+        # Training updates
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            # Process each sample in the batch individually
+            for i in range(x.shape[0]):
+                x_sample = x[i]
+                y_sample = y[i]
+                model.step(x_sample, y_sample)
+        
+        # Evaluate on training set (after all updates)
+        train_losses = []
+        with torch.no_grad():
+            for x, y in train_loader:
+                x, y = x.to(device), y.to(device)
+                # Process each sample in the batch individually
+                for i in range(x.shape[0]):
+                    x_sample = x[i]
+                    y_sample = y[i]
+                    x_clean, _ = model.forward_clean(x_sample)
+                    loss = F.mse_loss(x_clean[-1], y_sample).item()
+                    train_losses.append(loss)
+        
+        # Evaluate on test set
+        test_losses = []
+        with torch.no_grad():
+            for x, y in test_loader:
+                x, y = x.to(device), y.to(device)
+                # Process each sample in the batch individually
+                for i in range(x.shape[0]):
+                    x_sample = x[i]
+                    y_sample = y[i]
+                    x_clean, _ = model.forward_clean(x_sample)
+                    loss = F.mse_loss(x_clean[-1], y_sample).item()
+                    test_losses.append(loss)
+        
+        epoch_time = time.time() - epoch_start_time
+        avg_train = np.mean(train_losses)
+        avg_test = np.mean(test_losses)
+        
+        # Store final epoch losses
+        final_train_loss = avg_train
+        final_test_loss = avg_test
+        
+        # Print epoch progress
+        print(f"  Epoch {epoch+1:3d}/{n_epochs} | Train Loss: {avg_train:.6f} | Test Loss: {avg_test:.6f} | Time: {epoch_time:.3f}s")
+
     # Final summary
     print("\n" + "="*80)
     print("FINAL RESULTS")
     print("="*80)
-    print(f"Final Train Loss: {train_losses_per_epoch[-1]:.6f}")
-    print(f"Final Test Loss:  {test_losses_per_epoch[-1]:.6f}")
-    
-
+    print(f"Final Train Loss: {final_train_loss:.6f}")
+    print(f"Final Test Loss:  {final_test_loss:.6f}")
     print("="*80 + "\n")
-    
+
     return {
-        'train_losses': train_losses_per_epoch,
-        'test_losses': test_losses_per_epoch,
-        'final_train': train_losses_per_epoch[-1],
-        'final_test': test_losses_per_epoch[-1]
+        'train_losses': train_losses,
+        'test_losses': test_losses,
+        'final_train': final_train_loss,
+        'final_test': final_test_loss
     }
 
 
 if __name__ == "__main__":
     # Training examples
-    results_banp = train_bp_with_dataset(
-        input_dim = 10,
-        hidden_dim =32,
-        output_dim=1,
-        n_samples =5000,
-        n_epochs = 10,
-        eta=1e-3,
-        batch_size=10, 
-        train_split=0.8, 
-        seed=42
+    dataset = SyntheticDataset(10, 48, 1, 5000, 42)
+
+    print("-"*80)
+    print("Training BP model...")
+    print("-"*80)
+
+    results_bp = train_bp_model(
+        layer_sizes=[10, 32, 1],
+        dataset=dataset,
+        n_epochs=10,
+        lr=1e-3,
+        batch_size=1,
+        train_split=0.8,
+        seed=0
     )
-    
-    results_danp = train_danp_with_dataset(
-        input_dim=10,
-        hidden_dim=32,
-        output_dim=1,
-        n_samples=5000,
+
+    print("-"*80)
+    print("Training DANP model...")
+    print("-"*80)
+
+    results_danp = train_danp_model(
+        layer_sizes=[10, 32, 1],
+        dataset=dataset,
         n_epochs=10,
         eta=1e-3,
         alpha=1e-5,
-        sigma=0.001
+        sigma=0.001,
+        batch_size=1,
+        train_split=0.8,
+        seed=0
     )
-    # print(results_banp)
-    # print(results_danp)
