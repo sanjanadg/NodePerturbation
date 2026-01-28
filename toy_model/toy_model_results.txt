@@ -1,5 +1,51 @@
 
-Synthetic Dataset: [10, 48, 1]
+Synthetic Dataset: The network that the data comes from: [10, 32, 1] (which matches the network sizes of BP and DANP).
+
+--------------------------------------------------------------------------------
+Training BP model...
+--------------------------------------------------------------------------------
+BP batch size: 1
+Samples per epoch BP: 4000
+  Epoch   1/10 | Train Loss: 0.108350 | Test Loss: 0.113002 | Time: 0.455s
+  Epoch   2/10 | Train Loss: 0.083243 | Test Loss: 0.089391 | Time: 0.413s
+  Epoch   3/10 | Train Loss: 0.063827 | Test Loss: 0.069867 | Time: 0.395s
+  Epoch   4/10 | Train Loss: 0.047282 | Test Loss: 0.052748 | Time: 0.425s
+  Epoch   5/10 | Train Loss: 0.034640 | Test Loss: 0.039419 | Time: 0.405s
+  Epoch   6/10 | Train Loss: 0.027508 | Test Loss: 0.031798 | Time: 0.401s
+  Epoch   7/10 | Train Loss: 0.023924 | Test Loss: 0.027281 | Time: 0.405s
+  Epoch   8/10 | Train Loss: 0.021535 | Test Loss: 0.025019 | Time: 0.416s
+  Epoch   9/10 | Train Loss: 0.020181 | Test Loss: 0.022717 | Time: 0.574s
+  Epoch  10/10 | Train Loss: 0.018903 | Test Loss: 0.021829 | Time: 0.427s
+
+================================================================================
+FINAL RESULTS
+================================================================================
+Final Train Loss: 0.018903
+Final Test Loss:  0.021829
+================================================================================
+
+--------------------------------------------------------------------------------
+Training DANP model...
+--------------------------------------------------------------------------------
+  Epoch   1/10 | Train Loss: 0.000006 | Test Loss: 0.000007 | Time: 0.477s
+  Epoch   2/10 | Train Loss: 0.000012 | Test Loss: 0.000012 | Time: 0.463s
+  Epoch   3/10 | Train Loss: 0.000012 | Test Loss: 0.000014 | Time: 0.457s
+  Epoch   4/10 | Train Loss: 0.000014 | Test Loss: 0.000015 | Time: 0.449s
+  Epoch   5/10 | Train Loss: 0.000017 | Test Loss: 0.000019 | Time: 0.455s
+  Epoch   6/10 | Train Loss: 0.000019 | Test Loss: 0.000020 | Time: 0.458s
+  Epoch   7/10 | Train Loss: 0.000019 | Test Loss: 0.000021 | Time: 0.453s
+  Epoch   8/10 | Train Loss: 0.000020 | Test Loss: 0.000021 | Time: 0.455s
+  Epoch   9/10 | Train Loss: 0.000022 | Test Loss: 0.000025 | Time: 0.460s
+  Epoch  10/10 | Train Loss: 0.000022 | Test Loss: 0.000025 | Time: 0.456s
+
+================================================================================
+FINAL RESULTS
+================================================================================
+Final Train Loss: 0.000022
+Final Test Loss:  0.000025
+================================================================================
+
+Synthetic Dataset: The network that the data comes from: [10, 48, 1]
 
 --------------------------------------------------------------------------------
 Training BP model...

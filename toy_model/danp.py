@@ -65,7 +65,64 @@ class DANPMLP:
 
         return x, a
 
+    def compute_grad_estimate(self, x0, target):
+        """
+        Compute gradient estimate for a single sample without applying updates.
+        Returns tuple: (weight_gradients, decorrelation_updates, loss_clean)
+        """
+        # Clean forward pass
+        x_clean, a_clean = self.forward_clean(x0)
+
+        # Noisy forward pass
+        x_noisy, a_noisy = self.forward_noisy(x0)
+
+        # Compute loss difference (Eq. in Algorithm 1)
+        L_clean = F.mse_loss(x_clean[-1], target)
+        L_noisy = F.mse_loss(x_noisy[-1], target)
+        delta_L = (L_noisy - L_clean).item()
+
+        # Compute total activity difference norm for normalization
+        delta_a_all = []
+        for l in range(self.L):
+            delta_a_l = a_noisy[l] - a_clean[l] 
+            delta_a_all.append(delta_a_l)
+        
+        # Concatenate and compute norm (as per Eq. 6)
+        delta_a_concat = torch.cat([d.flatten() for d in delta_a_all])
+        norm_sq = (delta_a_concat**2).sum() + 1e-8
+
+        # Get total number of units N
+        N = sum(a.numel() for a in a_clean)
+
+        # Weight gradient estimates (Eq. 6 in paper)
+        weight_gradients = []
+        for l in range(self.L):
+            delta_a = delta_a_all[l]
+            x_star = self.R[l] @ x_clean[l]
+            
+            # Compute gradient
+            grad = torch.outer(delta_a, x_star)
+            
+            # Compute update with gradient clipping
+            update = self.eta * N * delta_L * grad / norm_sq
+            update = torch.clamp(update, -1.0, 1.0)  # Clip for stability
+            weight_gradients.append(update)
+
+        # Decorrelation updates (as per Ahmad et al. 2023)
+        decorrelation_updates = []
+        for l in range(1, self.L + 1):
+            x_star = self.R[l] @ x_clean[l]
+            cov = torch.outer(x_star, x_star)
+            diag = torch.diag(x_star**2)
+            
+            # Compute decorrelation update
+            dec_update = self.alpha * (cov - diag) @ self.R[l]
+            decorrelation_updates.append(dec_update)
+
+        return weight_gradients, decorrelation_updates, L_clean.item()
+
     def step(self, x0, target):
+        """Apply updates for a single sample (original implementation)."""
         # Clean forward pass
         x_clean, a_clean = self.forward_clean(x0)
 
