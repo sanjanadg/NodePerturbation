@@ -15,7 +15,9 @@ python3 batch_size_experiment.py --lr_scaling sqrt
 # Without scaling (your current behavior)
 python3 batch_size_experiment.py --lr_scaling none
 
-python3 batch_size_experiment.py --layer_sizes 10 128 128 128 128 1 --output_dir ./batch_size_results_large --lr_scaling linear
+python3 batch_size_experiment.py --layer_sizes 10 128 128 128 128 1 --output_dir ./bs_large_lin_2 --lr_scaling linear
+
+python3 batch_size_experiment.py --layer_sizes 10 128 128 128 128 1 --output_dir ./bs_large_lin_2 --lr_scaling linear
 
 """
 
@@ -24,6 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import os
+from datetime import datetime
 
 # Import the training functions and dataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'toy_model'))
@@ -119,12 +122,14 @@ def run_batch_size_experiment(config, output_dir='./batch_size_results'):
         )
         
         # Train DANP model with batch processing
-        print(f"\nTraining DANP model with batch_size={batch_size}, lr={scaled_lr:.6f}...")
+        # NOTE: train_danp_model_batch scales eta by batch_size internally,
+        # so we pass the base learning rate (not the scaled one) to avoid double scaling
+        print(f"\nTraining DANP model with batch_size={batch_size}, base_lr={base_lr:.6f}...")
         danp_results = train_danp_model_batch(
             layer_sizes=config['layer_sizes'],
             dataset=dataset,
             n_epochs=config['n_epochs'],
-            eta=scaled_lr,  # ← Use scaled learning rate
+            eta=base_lr,  # ← Pass base learning rate (will be scaled inside function)
             alpha=config.get('alpha', 1e-4),
             sigma=config.get('sigma', 0.001),
             batch_size=batch_size,
@@ -290,16 +295,21 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate (for batch_size=1)')
     parser.add_argument('--sigma', type=float, default=0.001, help='DANP noise std')
     parser.add_argument('--alpha', type=float, default=1e-4, help='DANP decorrelation rate')
-    parser.add_argument('--batch_sizes', type=int, nargs='+', default=[1, 2, 4, 8, 16, 32], 
+    parser.add_argument('--batch_sizes', type=int, nargs='+', default=[32], 
                        help='Batch sizes to test')
     parser.add_argument('--lr_scaling', type=str, default='linear', 
                        choices=['linear', 'sqrt', 'none'],
                        help='Learning rate scaling strategy')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    parser.add_argument('--output_dir', type=str, default='./batch_size_results', 
-                       help='Output directory')
+    parser.add_argument('--output_dir', type=str, default=None, 
+                       help='Output directory (default: ./batch_size_results_YYYYMMDD)')
     
     args = parser.parse_args()
+    
+    # Create date-stamped output directory if not provided
+    if args.output_dir is None:
+        date_str = datetime.now().strftime('%Y%m%d')
+        args.output_dir = f'./batch_size_results_{date_str}'
     
     # Determine layer sizes
     if args.layer_sizes is not None:
