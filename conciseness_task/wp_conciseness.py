@@ -1,11 +1,3 @@
-import sys
-import os as _os
-
-# Allow `python wp_conciseness.py` from this dir or repo root
-_ct_dir = _os.path.dirname(_os.path.abspath(__file__))
-if _ct_dir not in sys.path:
-    sys.path.insert(0, _ct_dir)
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging
@@ -47,8 +39,20 @@ do_sample = False
 initial_seed = 33
 
 
-# --- Dummy Dataset and Reward Function (shared with danp_conciseness_lm) ---
-from wp_conciseness_task import WP_DUMMY_DATASET as dataset, compute_reward
+# --- Dummy Dataset and Reward Function ---
+# In practice, define a set of input reasoning tasks with desired targets.
+dataset = [
+    ("Solve: 3 + 5 =", "8"),
+    ("If all birds can fly and penguins are birds, can penguins fly?", "No"),
+]
+
+def compute_reward(generated_text, target_text):
+    """
+    A dummy reward function.
+    Replace this with a metric that evaluates the correctness or quality of reasoning.
+    """
+    # Example: negative absolute difference in length (for demonstration only)
+    return -abs(len(generated_text) - len(target_text))
 
 def force_memory_cleanup():
     """Force aggressive memory cleanup"""
@@ -228,9 +232,8 @@ def main():
                 print(f"Worker process {accelerator.process_index} waiting for seeds")
             seeds_tensor = torch.zeros(POPULATION_SIZE, dtype=torch.long, device=accelerator.device)
 
-        # Broadcast seeds from main process to all processes (no-op when not using torchrun/accelerate launch)
-        if torch.distributed.is_initialized():
-            torch.distributed.broadcast(seeds_tensor, src=0)
+        # Broadcast seeds from main process to all processes
+        torch.distributed.broadcast(seeds_tensor, src=0)
         seeds = seeds_tensor.cpu().tolist()  # Convert back to list for all processes
 
         if args.verbose:
@@ -275,9 +278,8 @@ def main():
         for seed_idx, reward in local_rewards:
             all_rewards[seed_idx] = reward
 
-        # Aggregate rewards from all processes (skip when single-process: no distributed group)
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(all_rewards, op=torch.distributed.ReduceOp.SUM)
+        # Aggregate rewards from all processes (each process will get the full reward list)
+        torch.distributed.all_reduce(all_rewards, op=torch.distributed.ReduceOp.SUM)
 
         # Convert aggregated rewards back to Python list
         rewards = all_rewards.cpu().tolist()
