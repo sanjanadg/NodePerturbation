@@ -228,8 +228,9 @@ def main():
                 print(f"Worker process {accelerator.process_index} waiting for seeds")
             seeds_tensor = torch.zeros(POPULATION_SIZE, dtype=torch.long, device=accelerator.device)
 
-        # Broadcast seeds from main process to all processes
-        torch.distributed.broadcast(seeds_tensor, src=0)
+        # Broadcast seeds from main process to all processes (no-op when not using torchrun/accelerate launch)
+        if torch.distributed.is_initialized():
+            torch.distributed.broadcast(seeds_tensor, src=0)
         seeds = seeds_tensor.cpu().tolist()  # Convert back to list for all processes
 
         if args.verbose:
@@ -274,8 +275,9 @@ def main():
         for seed_idx, reward in local_rewards:
             all_rewards[seed_idx] = reward
 
-        # Aggregate rewards from all processes (each process will get the full reward list)
-        torch.distributed.all_reduce(all_rewards, op=torch.distributed.ReduceOp.SUM)
+        # Aggregate rewards from all processes (skip when single-process: no distributed group)
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(all_rewards, op=torch.distributed.ReduceOp.SUM)
 
         # Convert aggregated rewards back to Python list
         rewards = all_rewards.cpu().tolist()
