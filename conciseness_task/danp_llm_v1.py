@@ -266,7 +266,10 @@ class DANPHook:
                 if mode_ref[0] == "noisy":
                     g = torch.Generator(device=a32.device)
                     g.manual_seed(_seed_for(uid, self.base_seed, x2.shape[0]))
-                    eps = torch.randn_like(a32, generator=g) * sig
+                    # randn_like(..., generator=) needs PyTorch 2.0+; randn supports older releases
+                    eps = torch.randn(
+                        a32.shape, device=a32.device, dtype=a32.dtype, generator=g
+                    ) * sig
                     a_out = a32 + eps
                     # Store for gradient computation
                     self._captured_noisy[name] = {
