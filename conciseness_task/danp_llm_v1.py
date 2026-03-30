@@ -25,6 +25,9 @@ WHAT IS NOT IN THIS VERSION:
 USAGE:
   python danp_llm_v1.py --objective ce --n_train 8 --n_eval 4 --epochs 2 --batch_size 2 --verbose
   python danp_llm_v1.py --objective reward --n_train 8 --n_eval 4 --epochs 2 --batch_size 2 --verbose
+  # Debug: print target / generated text / reward (reward objective only)
+  python danp_llm_v1.py --objective reward --log_first_batch_each_epoch
+  python danp_llm_v1.py --objective reward --log_generations_every 5
 """
 
 import os, sys, re, time, hashlib, argparse
@@ -86,6 +89,23 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--eval_interval", type=int, default=1)
     p.add_argument("--verbose", action="store_true")
+    p.add_argument(
+        "--log_generations_every",
+        type=int,
+        default=0,
+        help="reward only: print target / generated text / reward every N global steps (0=off)",
+    )
+    p.add_argument(
+        "--log_first_batch_each_epoch",
+        action="store_true",
+        help="reward only: also print on the first batch of each epoch",
+    )
+    p.add_argument(
+        "--log_generations_max_chars",
+        type=int,
+        default=600,
+        help="truncate printed generated text to this many characters",
+    )
     return p.parse_args()
 
 
@@ -593,6 +613,37 @@ def eval_reward(model, tokenizer, data, device, max_new_tokens, do_sample):
     return float(np.mean(rewards))
 
 
+def log_reward_generation_sample(
+    model,
+    tokenizer,
+    batch,
+    device,
+    max_new_tokens,
+    do_sample,
+    max_chars,
+    epoch_idx,
+    step_in_epoch,
+    global_step,
+):
+    """
+    Debug: after a training step, run one greedy/sampled generate (no DANP hooks)
+    on the first example in the batch and print target, text, reward, lengths.
+    """
+    prompt, target = batch[0]
+    model.eval()
+    r, text = generate_reward(
+        model, tokenizer, prompt, target, device, max_new_tokens, do_sample
+    )
+    shown = text if len(text) <= max_chars else text[:max_chars] + "..."
+    print(
+        f"\n[gen_log] epoch={epoch_idx + 1} batch_step={step_in_epoch} global_step={global_step}\n"
+        f"  target (repr): {target!r}\n"
+        f"  reward: {r:.4f}  |  len(generated)={len(text)}  len(target)={len(target)}\n"
+        f"  generated (repr, truncated): {shown!r}\n",
+        flush=True,
+    )
+
+
 # ===========================================================================
 # Main training loop
 # ===========================================================================
@@ -649,6 +700,10 @@ def main():
     rng = np.random.default_rng(args.seed)
     train_metric_history = []
     eval_metric_history  = []
+    global_step = 0
+    log_reward = args.objective == "reward" and (
+        args.log_generations_every > 0 or args.log_first_batch_each_epoch
+    )
 
     for epoch in range(args.epochs):
         model.eval()   # keep BN/dropout off; DANP doesn't use gradients
@@ -677,6 +732,27 @@ def main():
             epoch_L.append(L)
             epoch_dL.append(dL)
             pbar.set_postfix({"L": f"{L:.4f}", "dL": f"{dL:.4e}"})
+
+            if log_reward:
+                should_log = False
+                if args.log_first_batch_each_epoch and step == 0:
+                    should_log = True
+                if args.log_generations_every > 0 and global_step % args.log_generations_every == 0:
+                    should_log = True
+                if should_log:
+                    log_reward_generation_sample(
+                        model,
+                        tok,
+                        batch,
+                        device,
+                        args.max_new_tokens,
+                        args.reward_do_sample,
+                        args.log_generations_max_chars,
+                        epoch,
+                        step,
+                        global_step,
+                    )
+            global_step += 1
 
             if device.type == "cuda":
                 torch.cuda.empty_cache()
