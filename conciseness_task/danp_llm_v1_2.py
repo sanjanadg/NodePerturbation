@@ -42,8 +42,8 @@ torch.backends.cuda.matmul.allow_tf32 = True
 # Defaults (aligned with wp_conciseness.py where applicable)
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-DEFAULT_ETA = 1e-3          # weight learning rate (same role as ALPHA in ES)
-DEFAULT_SIGMA = 1e-3        # noise std for node perturbation
+DEFAULT_ETA = 1e-3          # weight learning rate
+DEFAULT_SIGMA = 0.1         # noise std — must survive bf16 rounding (~0.001 threshold)
 DEFAULT_ALPHA = 1e-4        # decorrelation rate (frozen in v1, used in v2+)
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_POPULATION = 1      # increase for lower-variance gradient estimates
@@ -184,10 +184,7 @@ def _make_hooked(name, mod, orig, R, sig, uid, hook_self):
             if hook_self._mode == "noisy":
                 g = torch.Generator(device=a32.device)
                 g.manual_seed(_seed_for(uid, hook_self.base_seed, x2.shape[0]))
-                # randn_like(..., generator=) needs PyTorch 2.0+; randn works on older releases
-                eps = torch.randn(
-                    a32.shape, device=a32.device, dtype=a32.dtype, generator=g
-                ) * sig
+                eps = torch.randn_like(a32, generator=g) * sig
                 a_out = a32 + eps
                 hook_self._captured_noisy[name] = {
                     "x_star": x_star.detach().clone(),
@@ -490,18 +487,35 @@ def danp_grad_single(
         # N = total number of activation units across all layers
         N = delta_a_cat.numel()
 
-        # scale = eta * N * delta_L / norm_sq  (toy model Eq. 6)
+        # IMPORTANT: in the toy model N is small (hundreds of units).
+        # Here N can be 19M+ (tokens * hidden_dim * n_layers).
+        # We normalize norm_sq by N so scale = eta * delta_L / (norm_sq/N)
+        # which is equivalent to using the MEAN squared activation difference
+        # rather than the SUM. Without this, scale → 0 as sequence grows.
+        norm_sq_per_unit = norm_sq / N   # mean squared perturbation per unit
+
         delta_L_clamped = float(np.clip(delta_L, -1e4, 1e4))
-        scale_raw = eta * N * delta_L_clamped / norm_sq
+        # scale = eta * delta_L / mean_norm_sq  (N cancels out)
+        scale_raw = eta * delta_L_clamped / norm_sq_per_unit
         scale = float(np.clip(scale_raw, -max_scale, max_scale))
 
         if not np.isfinite(scale):
             continue
 
         if verbose and pop_i == 0:
+            # Check noise actually survived bf16 rounding
+            sample_name = hook._targets[0][0]
+            if sample_name in captured_clean and sample_name in captured_noisy:
+                a_c_sample = captured_clean[sample_name]["a_clean"]
+                a_n_sample = captured_noisy[sample_name]["a_noisy"]
+                noise_alive = (a_n_sample - a_c_sample).abs().max().item()
+            else:
+                noise_alive = float("nan")
             print(f"\n[DANP grad] L_clean_tf={L_clean_tf:.4f} L_noisy_tf={L_noisy_tf:.4f} "
                   f"delta_L={delta_L:.6f} N={N} norm_sq={norm_sq:.4e} "
+                  f"norm_sq_per_unit={norm_sq_per_unit:.4e} "
                   f"scale_raw={scale_raw:.4e} scale={scale:.4e} "
+                  f"noise_max={noise_alive:.4e} "
                   f"(L_clean reported={L_clean:.4f})")
 
         # Per-layer weight update  (toy model: W[l] -= update, see `step`)
