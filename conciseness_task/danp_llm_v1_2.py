@@ -162,6 +162,45 @@ def get_target_linears(model, include, last_k):
             if _is_target_linear(name, mod, include, last_k, total_blocks)]
 
 
+def _stable_uid(name: str) -> int:
+    h = hashlib.blake2s(name.encode(), digest_size=4).digest()
+    return int.from_bytes(h, "little") & 0x7FFFFFFF
+
+
+def _seed_for(uid: int, base: int, n_tokens: int) -> int:
+    return (base ^ uid ^ (n_tokens * 2654435761)) & 0x7FFFFFFF
+
+
+def _make_hooked(name, mod, orig, R, sig, uid, hook_self):
+    """Module-level closure factory — reads hook_self._mode at call time."""
+    def hooked_forward(x):
+        orig_shape = x.shape
+        x2 = x.reshape(-1, orig_shape[-1]).float()
+        R_dev = R.to(x2.device)
+        x_star = x2 @ R_dev.T
+        with torch.no_grad():
+            a = orig(x_star.to(mod.weight.dtype))
+            a32 = a.float()
+            if hook_self._mode == "noisy":
+                g = torch.Generator(device=a32.device)
+                g.manual_seed(_seed_for(uid, hook_self.base_seed, x2.shape[0]))
+                eps = torch.randn_like(a32, generator=g) * sig
+                a_out = a32 + eps
+                hook_self._captured_noisy[name] = {
+                    "x_star": x_star.detach().clone(),
+                    "a_noisy": a_out.detach().clone(),
+                }
+            else:
+                a_out = a32
+                hook_self._captured_clean[name] = {
+                    "x_star": x_star.detach().clone(),
+                    "a_clean": a32.detach().clone(),
+                }
+        a_out = a_out.to(x.dtype).reshape(*orig_shape[:-1], a_out.shape[-1])
+        return a_out
+    return hooked_forward
+
+
 # ===========================================================================
 # DANP Hook — v1: R decorrelates INPUT (matching toy danp.py)
 # ===========================================================================
@@ -248,44 +287,6 @@ class DANPHook:
         uid = _stable_uid(name)
         mod.forward = _make_hooked(name, mod, orig, R, sig, uid, self)
 
-    # Make mode_ref point at the hook object so it's always current
-    # (the list-cell trick above is fragile if attach() is called multiple times)
-    def _make_hooked(name, mod, orig, R, sig, uid, hook_self):
-        def hooked_forward(x):
-            orig_shape = x.shape
-            x2 = x.reshape(-1, orig_shape[-1]).float()
-            R_dev = R.to(x2.device)
-            x_star = x2 @ R_dev.T
-            with torch.no_grad():
-                a = orig(x_star.to(mod.weight.dtype))
-                a32 = a.float()
-                if hook_self._mode == "noisy":
-                    g = torch.Generator(device=a32.device)
-                    g.manual_seed(_seed_for(uid, hook_self.base_seed, x2.shape[0]))
-                    eps = torch.randn_like(a32, generator=g) * sig
-                    a_out = a32 + eps
-                    hook_self._captured_noisy[name] = {
-                        "x_star": x_star.detach().clone(),
-                        "a_noisy": a_out.detach().clone(),
-                    }
-                else:
-                    a_out = a32
-                    hook_self._captured_clean[name] = {
-                        "x_star": x_star.detach().clone(),
-                        "a_clean": a32.detach().clone(),
-                    }
-            a_out = a_out.to(x.dtype).reshape(*orig_shape[:-1], a_out.shape[-1])
-            return a_out
-        return hooked_forward
-
-
-def _stable_uid(name: str) -> int:
-    h = hashlib.blake2s(name.encode(), digest_size=4).digest()
-    return int.from_bytes(h, "little") & 0x7FFFFFFF
-
-
-def _seed_for(uid: int, base: int, n_tokens: int) -> int:
-    return (base ^ uid ^ (n_tokens * 2654435761)) & 0x7FFFFFFF
 
 
 # ===========================================================================
