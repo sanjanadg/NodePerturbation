@@ -184,7 +184,10 @@ def _make_hooked(name, mod, orig, R, sig, uid, hook_self):
             if hook_self._mode == "noisy":
                 g = torch.Generator(device=a32.device)
                 g.manual_seed(_seed_for(uid, hook_self.base_seed, x2.shape[0]))
-                eps = torch.randn_like(a32, generator=g) * sig
+                # randn_like(..., generator=) needs PyTorch 2.0+; randn works on older releases
+                eps = torch.randn(
+                    a32.shape, device=a32.device, dtype=a32.dtype, generator=g
+                ) * sig
                 a_out = a32 + eps
                 hook_self._captured_noisy[name] = {
                     "x_star": x_star.detach().clone(),
