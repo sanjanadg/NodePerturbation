@@ -22,9 +22,13 @@ WHAT IS NOT IN THIS VERSION:
   - Population-size > 1 averaging (kept in API but defaults to 1 for clarity).
   - Multi-GPU / accelerate (single GPU focus).
 
+DATA:
+  - Training always cycles the same two WP dummy examples (see WP_DUMMY_EXAMPLES);
+    fixed order every epoch (no shuffle). Eval/baseline uses the same two.
+
 USAGE:
-  python danp_llm_v1.py --objective ce --n_train 8 --n_eval 4 --epochs 2 --batch_size 2 --verbose
-  python danp_llm_v1.py --objective reward --n_train 8 --n_eval 4 --epochs 2 --batch_size 2 --verbose
+  python danp_llm_v1.py --objective ce --epochs 2 --batch_size 2 --verbose
+  python danp_llm_v1.py --objective reward --epochs 2 --batch_size 2 --verbose
   # Debug: print target / generated text / reward (reward objective only)
   python danp_llm_v1.py --objective reward --log_first_batch_each_epoch
   python danp_llm_v1.py --objective reward --log_generations_every 5
@@ -60,8 +64,6 @@ def parse_args():
     p.add_argument("--model_name", default=DEFAULT_MODEL)
     p.add_argument("--hf_cache_dir", default="huggingface_cache")
     p.add_argument("--output_dir", default="./out_danp_v1")
-    p.add_argument("--n_train", type=int, default=64)
-    p.add_argument("--n_eval",  type=int, default=32)
     p.add_argument("--epochs",  type=int, default=5)
     p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--max_length",    type=int, default=512,
@@ -110,7 +112,7 @@ def parse_args():
 
 
 # ===========================================================================
-# Dataset helpers  (same dummy data as wp_conciseness / danp_llm_conciseness)
+# Fixed training data (same two examples as wp_conciseness / wp_conciseness_task)
 # ===========================================================================
 # _DUMMY_PAIRS = [
 #     ("Summarise in one sentence: The cat sat on the mat and looked around.", " A cat sat on a mat."),
@@ -119,17 +121,10 @@ def parse_args():
 #     ("Summarise in one sentence: He read a book by the fireplace all evening.", " He read by the fireplace."),
 # ]
 
-_DUMMY_PAIRS = [
+WP_DUMMY_EXAMPLES = [
     ("Solve: 3 + 5 =", "8"),
     ("If all birds can fly and penguins are birds, can penguins fly?", "No"),
 ]
-
-def build_dataset(n_train, n_eval, seed=42):
-    rng = np.random.default_rng(seed)
-    total = n_train + n_eval
-    pairs = (_DUMMY_PAIRS * ((total // len(_DUMMY_PAIRS)) + 1))[:total]
-    rng.shuffle(pairs)  # type: ignore[arg-type]
-    return list(pairs[:n_train]), list(pairs[n_train:n_train + n_eval])
 
 
 def compute_reward(generated_text: str, target_text: str) -> float:
@@ -653,8 +648,10 @@ def main():
     np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    train_data, eval_data = build_dataset(args.n_train, args.n_eval, args.seed)
-    print(f"Train: {len(train_data)}, Eval: {len(eval_data)}")
+    # Always the same two (prompt, target) pairs; no shuffle — same order every epoch/step.
+    train_data = list(WP_DUMMY_EXAMPLES)
+    eval_data = list(WP_DUMMY_EXAMPLES)
+    print(f"Train: {len(train_data)} fixed WP examples (eval uses the same two).")
 
     # Load model
     dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
@@ -697,7 +694,6 @@ def main():
         baseline = eval_reward(model, tok, eval_data, device, args.max_new_tokens, args.reward_do_sample)
         print(f"[BASELINE] Eval mean reward: {baseline:.4f}")
 
-    rng = np.random.default_rng(args.seed)
     train_metric_history = []
     eval_metric_history  = []
     global_step = 0
@@ -707,7 +703,7 @@ def main():
 
     for epoch in range(args.epochs):
         model.eval()   # keep BN/dropout off; DANP doesn't use gradients
-        indices = rng.permutation(len(train_data))
+        indices = np.arange(len(train_data))
         epoch_L, epoch_dL = [], []
 
         pbar = tqdm(range(0, len(train_data), args.batch_size),
