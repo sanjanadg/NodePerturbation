@@ -34,6 +34,7 @@ USAGE:
   # Debug: print target / generated text / reward (reward objective only)
   python danp_llm_v1.py --objective reward --log_first_batch_each_epoch
   python danp_llm_v1.py --objective reward --log_generations_every 5
+  python danp_llm_v1.py --objective ce --print_generation_each_epoch
 """
 
 import os, sys, re, time, hashlib, argparse
@@ -113,6 +114,11 @@ def parse_args():
         type=int,
         default=600,
         help="truncate printed generated text to this many characters",
+    )
+    p.add_argument(
+        "--print_generation_each_epoch",
+        action="store_true",
+        help="After each epoch, print greedy generations for each WP example (hooks detached)",
     )
     return p.parse_args()
 
@@ -675,6 +681,38 @@ def eval_reward(model, tokenizer, data, device, max_new_tokens, do_sample):
     return float(np.mean(rewards))
 
 
+def print_generations_after_epoch(
+    hook,
+    model,
+    tokenizer,
+    pairs,
+    device,
+    max_new_tokens,
+    do_sample,
+    max_chars,
+    epoch_idx,
+    objective,
+):
+    """Detach hooks and print model.generate output for every (prompt, target) pair."""
+    hook.detach()
+    model.eval()
+    print(f"\n========== Epoch {epoch_idx + 1} — generations (no hooks) ==========", flush=True)
+    for i, (prompt, target) in enumerate(pairs):
+        r, text = generate_reward(
+            model, tokenizer, prompt, target, device, max_new_tokens, do_sample
+        )
+        shown = text if len(text) <= max_chars else text[:max_chars] + "..."
+        line = (
+            f"  [{i}] prompt: {prompt!r}\n"
+            f"      target: {target!r}\n"
+            f"      generated ({len(text)} chars): {shown!r}"
+        )
+        if objective == "reward":
+            line += f"\n      compute_reward: {r:.4f}"
+        print(line, flush=True)
+    print("============================================================\n", flush=True)
+
+
 def log_reward_generation_sample(
     model,
     tokenizer,
@@ -828,6 +866,20 @@ def main():
         mean_L  = float(np.mean(epoch_L))
         mean_dL = float(np.mean(epoch_dL))
         train_metric_history.append(mean_L)
+
+        if args.print_generation_each_epoch:
+            print_generations_after_epoch(
+                hook,
+                model,
+                tok,
+                train_data,
+                device,
+                args.max_new_tokens,
+                args.reward_do_sample,
+                args.log_generations_max_chars,
+                epoch,
+                args.objective,
+            )
 
         if (epoch + 1) % args.eval_interval == 0:
             if args.objective == "ce":
