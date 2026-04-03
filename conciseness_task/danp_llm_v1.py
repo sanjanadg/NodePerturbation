@@ -22,6 +22,8 @@ WHAT IS NOT IN THIS VERSION:
   - Population-size > 1 averaging (kept in API but defaults to 1 for clarity).
   - Multi-GPU / accelerate (single GPU focus).
 
+  R decorrelation: when --alpha > 0, same rule as toy_model/danp.py (batched cov over tokens).
+
 DATA:
   - Training always cycles the same two WP dummy examples (see WP_DUMMY_EXAMPLES);
     fixed order every epoch (no shuffle). Eval/baseline uses the same two.
@@ -51,7 +53,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 DEFAULT_ETA = 1e-3          # weight learning rate (same role as ALPHA in ES)
 DEFAULT_SIGMA = 1e-3        # noise std for node perturbation
-DEFAULT_ALPHA = 1e-4        # decorrelation rate (frozen in v1, used in v2+)
+DEFAULT_ALPHA = 1e-4        # decorrelation rate for R update (same role as toy danp.alpha)
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_POPULATION = 1      # increase for lower-variance gradient estimates
 
@@ -72,8 +74,12 @@ def parse_args():
                    help="Generation cap (reward objective)")
     p.add_argument("--eta",   type=float, default=DEFAULT_ETA)
     p.add_argument("--sigma", type=float, default=DEFAULT_SIGMA)
-    p.add_argument("--alpha", type=float, default=DEFAULT_ALPHA,
-                   help="Decorrelation rate (unused in v1, reserved for v2)")
+    p.add_argument(
+        "--alpha",
+        type=float,
+        default=DEFAULT_ALPHA,
+        help="Decorrelation rate for R: R -= alpha*(cov-diag)@R from clean x_star (0 disables)",
+    )
     p.add_argument("--np_include", default="mlp",
                    choices=["head", "attn", "mlp", "all"],
                    help="Which Linear layers to perturb")
@@ -200,9 +206,10 @@ class DANPHook:
         a_noisy:      a + eps       (pre-activation, noisy)  — None in clean pass
 
     R matrices:
-        Initialised to identity; frozen in v1.
-        Shape: (in_features, in_features) — decorrelates the input.
-        In v2 we add: R -= alpha * (cov - diag) @ R using clean x (not x_star).
+        Initialised to identity; shape (in_features, in_features).
+        Updated after each sample (batch-averaged) as in toy danp.py:
+            R -= alpha * (cov - diag) @ R
+        with cov from clean x_star (batched across tokens).
 
     WHY INPUT, NOT OUTPUT:
         The toy model (danp.py) computes:
@@ -305,6 +312,37 @@ class DANPHook:
         mod.forward = hooked_forward
 
 
+def decorrelation_delta_r(
+    x_star: torch.Tensor,
+    R: torch.Tensor,
+    alpha: float,
+    dec_clip: float = 0.1,
+):
+    """
+    Single decorrelation step matching toy_model/danp.py (per-vector outer product),
+    extended to many tokens: cov = (X^T X) / N, diag = diag(mean(X^2, dim=0)).
+
+    Returns ΔR such that the caller should do R -= ΔR (same as synthetic_data.train_danp_batch).
+    """
+    if alpha <= 0:
+        return None
+    x = x_star.float().reshape(-1, x_star.shape[-1])
+    n, d = x.shape
+    if n == 0 or d == 0:
+        return None
+    Rf = R.float()
+    if n > 1:
+        cov = (x.T @ x) / n
+    else:
+        cov = x.T @ x
+    diag = torch.diag((x ** 2).mean(dim=0))
+    dec = alpha * (cov - diag) @ Rf
+    dec = torch.clamp(dec, -dec_clip, dec_clip)
+    if torch.isnan(dec).any() or torch.isinf(dec).any():
+        return None
+    return dec
+
+
 def _stable_uid(name: str) -> int:
     h = hashlib.blake2s(name.encode(), digest_size=4).digest()
     return int.from_bytes(h, "little") & 0x7FFFFFFF
@@ -382,6 +420,7 @@ def danp_grad_single(
     max_new_tokens, reward_do_sample,
     n_population,
     max_scale, max_update,
+    alpha,
     verbose=False,
 ):
     """
@@ -389,6 +428,7 @@ def danp_grad_single(
 
     Returns:
         weight_updates: dict  name+".weight" -> update tensor (same dtype as param)
+        decorrelation_updates: dict  layer name -> ΔR (same shape as hook.R[name])
         L_clean:        float  clean loss / reward
         delta_L_mean:   float  mean(L_noisy - L_clean) over population
     """
@@ -521,7 +561,19 @@ def danp_grad_single(
         weight_updates[key] = avg.to(mod.weight.dtype)
 
     delta_L_mean = delta_L_sum / max(1, n_population)
-    return weight_updates, float(L_clean), float(delta_L_mean)
+
+    # Decorrelation: R -= alpha (cov - diag) @ R from clean x_star (toy danp.py)
+    decorrelation_updates = {}
+    if alpha > 0:
+        for name in captured_clean:
+            x_star = captured_clean[name]["x_star"]
+            if x_star.dim() > 2:
+                x_star = x_star.reshape(-1, x_star.shape[-1])
+            dec = decorrelation_delta_r(x_star, hook.R[name], alpha)
+            if dec is not None:
+                decorrelation_updates[name] = dec
+
+    return weight_updates, decorrelation_updates, float(L_clean), float(delta_L_mean)
 
 
 # ===========================================================================
@@ -531,6 +583,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
                     eta, max_length, objective,
                     max_new_tokens, reward_do_sample,
                     n_population, max_scale, max_update,
+                    alpha,
                     base_seed, verbose=False):
     """
     One batch update step.
@@ -543,11 +596,12 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
     """
     total_L, total_dL = 0.0, 0.0
     accumulated = {}
+    accumulated_dec = {}
 
     for i, example in enumerate(batch):
         hook.base_seed = base_seed + i * 997   # different seed per example
 
-        updates, L_clean, dL = danp_grad_single(
+        updates, dec_updates, L_clean, dL = danp_grad_single(
             model, tokenizer, example, device, hook,
             eta=eta, max_length=max_length,
             objective=objective,
@@ -555,6 +609,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             reward_do_sample=reward_do_sample,
             n_population=n_population,
             max_scale=max_scale, max_update=max_update,
+            alpha=alpha,
             verbose=(verbose and i == 0),
         )
         total_L  += L_clean
@@ -565,7 +620,12 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
                 accumulated[key] = torch.zeros_like(upd)
             accumulated[key] += upd
 
-    # Apply averaged updates
+        for name, dR in dec_updates.items():
+            if name not in accumulated_dec:
+                accumulated_dec[name] = torch.zeros_like(dR)
+            accumulated_dec[name] += dR
+
+    # Apply averaged updates (weights first, then R — same order as synthetic_data.train_danp_batch)
     B = len(batch)
     with torch.no_grad():
         for key, acc in accumulated.items():
@@ -576,6 +636,13 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             mod = model.get_submodule(mod_path)
             # W -= update  (toy model sign convention)
             mod.weight.sub_(avg.to(mod.weight.dtype))
+
+        for name, acc in accumulated_dec.items():
+            avg = acc / B
+            if torch.isnan(avg).any() or torch.isinf(avg).any():
+                continue
+            R = hook.R[name]
+            R.sub_(avg.to(device=R.device, dtype=R.dtype))
 
     return total_L / B, total_dL / B
 
@@ -685,6 +752,10 @@ def main():
     n_targets = len(hook._targets)
     total_params = sum(mod.weight.numel() for _, mod in hook._targets)
     print(f"Perturbing {n_targets} Linear layers, {total_params:,} weight parameters")
+    if args.alpha > 0:
+        print(f"R decorrelation enabled: alpha={args.alpha} (R -= alpha*(cov-diag)@R per toy danp.py)")
+    else:
+        print("R decorrelation disabled (alpha=0)")
 
     # Baseline
     if args.objective == "ce":
@@ -722,6 +793,7 @@ def main():
                 n_population=args.n_population,
                 max_scale=args.max_scale,
                 max_update=args.max_update,
+                alpha=args.alpha,
                 base_seed=base_seed,
                 verbose=(args.verbose and step == 0 and epoch == 0),
             )
