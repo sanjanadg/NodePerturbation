@@ -812,6 +812,7 @@ def main():
     # Always the same two (prompt, target) pairs; no shuffle — same order every epoch/step.
     train_data = list(WP_DUMMY_EXAMPLES)
     eval_data = list(WP_DUMMY_EXAMPLES)
+    reward_continuation_only = not args.reward_full_string
     print(f"Train: {len(train_data)} fixed WP examples (eval uses the same two).")
 
     # Load model
