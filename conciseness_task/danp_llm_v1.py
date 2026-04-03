@@ -120,6 +120,12 @@ def parse_args():
         action="store_true",
         help="After each epoch, print greedy generations for each WP example (hooks detached)",
     )
+    p.add_argument(
+        "--reward_full_string",
+        action="store_true",
+        help="Reward objective only: score len(full decode) vs target (legacy). "
+        "Default is continuation-only (new tokens) vs target length.",
+    )
     return p.parse_args()
 
 
@@ -140,7 +146,11 @@ WP_DUMMY_EXAMPLES = [
 
 
 def compute_reward(generated_text: str, target_text: str) -> float:
-    """Same reward as wp_conciseness: negative absolute length difference."""
+    """Negative absolute length difference (higher = better).
+
+    `generated_text` is either the full decoded output or the continuation only,
+    depending on how `generate_reward` is called.
+    """
     return -abs(len(generated_text) - len(target_text))
 
 
@@ -401,19 +411,43 @@ def ce_loss(model, ids, mask, labs):
 # Reward generation (greedy by default, matching WP)
 # ===========================================================================
 @torch.no_grad()
-def generate_reward(model, tokenizer, prompt, target, device,
-                    max_new_tokens, do_sample):
-    inp  = tokenizer(prompt, return_tensors="pt", padding=True,
-                     padding_side="left")
-    ids  = inp["input_ids"].to(device)
+def generate_reward(
+    model,
+    tokenizer,
+    prompt,
+    target,
+    device,
+    max_new_tokens,
+    do_sample,
+    reward_continuation_only: bool = True,
+):
+    """Generate and compute reward.
+
+    Returns:
+        r: scalar reward
+        full_text: full decoded sequence (prompt + continuation), for logging
+        scored_text: substring used in `compute_reward` (continuation if
+            reward_continuation_only else full_text)
+    """
+    inp = tokenizer(prompt, return_tensors="pt", padding=True, padding_side="left")
+    ids = inp["input_ids"].to(device)
     amsk = inp["attention_mask"].to(device)
-    out  = model.generate(
-        input_ids=ids, attention_mask=amsk,
-        max_new_tokens=max_new_tokens, do_sample=do_sample,
+    out = model.generate(
+        input_ids=ids,
+        attention_mask=amsk,
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
         pad_token_id=tokenizer.pad_token_id,
     )
-    text = tokenizer.decode(out[0], skip_special_tokens=True)
-    return compute_reward(text, target), text
+    prompt_len = ids.shape[1]
+    full_text = tokenizer.decode(out[0], skip_special_tokens=True)
+    if reward_continuation_only:
+        cont_ids = out[0][prompt_len:]
+        scored_text = tokenizer.decode(cont_ids, skip_special_tokens=True)
+    else:
+        scored_text = full_text
+    r = compute_reward(scored_text, target)
+    return r, full_text, scored_text
 
 
 # ===========================================================================
@@ -424,6 +458,7 @@ def danp_grad_single(
     eta, max_length,
     objective,
     max_new_tokens, reward_do_sample,
+    reward_continuation_only,
     n_population,
     max_scale, max_update,
     alpha,
@@ -458,8 +493,10 @@ def danp_grad_single(
             # We want to MINIMISE -reward, so L_clean = -R_clean.
             # Then delta_L = L_noisy - L_clean = -R_noisy - (-R_clean) = R_clean - R_noisy.
             # If noise HURT reward (R_noisy < R_clean), delta_L > 0, update subtracts noise dir.
-            R_clean, _ = generate_reward(model, tokenizer, prompt, target,
-                                          device, max_new_tokens, reward_do_sample)
+            R_clean, _, _ = generate_reward(
+                model, tokenizer, prompt, target, device,
+                max_new_tokens, reward_do_sample, reward_continuation_only,
+            )
             L_clean = -float(R_clean)   # convert to loss convention (lower = better)
     captured_clean = {k: {kk: v.clone() for kk, v in vv.items()}
                       for k, vv in hook._captured_clean.items()}
@@ -483,8 +520,10 @@ def danp_grad_single(
                     labs.view(-1), ignore_index=-100,
                 ).item()
             else:
-                R_noisy, _ = generate_reward(model, tokenizer, prompt, target,
-                                              device, max_new_tokens, reward_do_sample)
+                R_noisy, _, _ = generate_reward(
+                    model, tokenizer, prompt, target, device,
+                    max_new_tokens, reward_do_sample, reward_continuation_only,
+                )
                 L_noisy = -float(R_noisy)
         captured_noisy = {k: {kk: v.clone() for kk, v in vv.items()}
                           for k, vv in hook._captured_noisy.items()}
@@ -588,6 +627,7 @@ def danp_grad_single(
 def danp_batch_step(model, tokenizer, batch, device, hook,
                     eta, max_length, objective,
                     max_new_tokens, reward_do_sample,
+                    reward_continuation_only,
                     n_population, max_scale, max_update,
                     alpha,
                     base_seed, verbose=False):
@@ -613,6 +653,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             objective=objective,
             max_new_tokens=max_new_tokens,
             reward_do_sample=reward_do_sample,
+            reward_continuation_only=reward_continuation_only,
             n_population=n_population,
             max_scale=max_scale, max_update=max_update,
             alpha=alpha,
@@ -672,11 +713,16 @@ def eval_ce(model, tokenizer, data, device, max_length, batch_size):
 
 
 @torch.no_grad()
-def eval_reward(model, tokenizer, data, device, max_new_tokens, do_sample):
+def eval_reward(
+    model, tokenizer, data, device, max_new_tokens, do_sample,
+    reward_continuation_only: bool = True,
+):
     rewards = []
     for prompt, target in data:
-        r, _ = generate_reward(model, tokenizer, prompt, target,
-                                device, max_new_tokens, do_sample)
+        r, _, _ = generate_reward(
+            model, tokenizer, prompt, target, device,
+            max_new_tokens, do_sample, reward_continuation_only,
+        )
         rewards.append(r)
     return float(np.mean(rewards))
 
@@ -692,21 +738,26 @@ def print_generations_after_epoch(
     max_chars,
     epoch_idx,
     objective,
+    reward_continuation_only: bool = True,
 ):
     """Detach hooks and print model.generate output for every (prompt, target) pair."""
     hook.detach()
     model.eval()
     print(f"\n========== Epoch {epoch_idx + 1} — generations (no hooks) ==========", flush=True)
     for i, (prompt, target) in enumerate(pairs):
-        r, text = generate_reward(
-            model, tokenizer, prompt, target, device, max_new_tokens, do_sample
+        r, full_text, scored = generate_reward(
+            model, tokenizer, prompt, target, device,
+            max_new_tokens, do_sample, reward_continuation_only,
         )
-        shown = text if len(text) <= max_chars else text[:max_chars] + "..."
+        shown = full_text if len(full_text) <= max_chars else full_text[:max_chars] + "..."
         line = (
             f"  [{i}] prompt: {prompt!r}\n"
             f"      target: {target!r}\n"
-            f"      generated ({len(text)} chars): {shown!r}"
+            f"      generated ({len(full_text)} chars full"
         )
+        if objective == "reward" and reward_continuation_only:
+            line += f", {len(scored)} chars continuation"
+        line += f"): {shown!r}"
         if objective == "reward":
             line += f"\n      compute_reward: {r:.4f}"
         print(line, flush=True)
@@ -724,6 +775,7 @@ def log_reward_generation_sample(
     epoch_idx,
     step_in_epoch,
     global_step,
+    reward_continuation_only: bool = True,
 ):
     """
     Debug: after a training step, run one greedy/sampled generate (no DANP hooks)
@@ -731,14 +783,18 @@ def log_reward_generation_sample(
     """
     prompt, target = batch[0]
     model.eval()
-    r, text = generate_reward(
-        model, tokenizer, prompt, target, device, max_new_tokens, do_sample
+    r, full_text, scored = generate_reward(
+        model, tokenizer, prompt, target, device,
+        max_new_tokens, do_sample, reward_continuation_only,
     )
-    shown = text if len(text) <= max_chars else text[:max_chars] + "..."
+    shown = full_text if len(full_text) <= max_chars else full_text[:max_chars] + "..."
+    len_note = f"len(full)={len(full_text)}"
+    if reward_continuation_only:
+        len_note += f" len(continuation)={len(scored)}"
     print(
         f"\n[gen_log] epoch={epoch_idx + 1} batch_step={step_in_epoch} global_step={global_step}\n"
         f"  target (repr): {target!r}\n"
-        f"  reward: {r:.4f}  |  len(generated)={len(text)}  len(target)={len(target)}\n"
+        f"  reward: {r:.4f}  |  {len_note}  len(target)={len(target)}\n"
         f"  generated (repr, truncated): {shown!r}\n",
         flush=True,
     )
@@ -800,8 +856,16 @@ def main():
         baseline = eval_ce(model, tok, eval_data, device, args.max_length, args.batch_size)
         print(f"[BASELINE] Eval CE loss: {baseline:.4f}")
     else:
-        baseline = eval_reward(model, tok, eval_data, device, args.max_new_tokens, args.reward_do_sample)
-        print(f"[BASELINE] Eval mean reward: {baseline:.4f}")
+        baseline = eval_reward(
+            model, tok, eval_data, device, args.max_new_tokens, args.reward_do_sample,
+            reward_continuation_only=reward_continuation_only,
+        )
+        rmode = (
+            "continuation vs target length"
+            if reward_continuation_only
+            else "full decode vs target length (legacy)"
+        )
+        print(f"[BASELINE] Eval mean reward ({rmode}): {baseline:.4f}")
 
     train_metric_history = []
     eval_metric_history  = []
@@ -828,6 +892,7 @@ def main():
                 objective=args.objective,
                 max_new_tokens=args.max_new_tokens,
                 reward_do_sample=args.reward_do_sample,
+                reward_continuation_only=reward_continuation_only,
                 n_population=args.n_population,
                 max_scale=args.max_scale,
                 max_update=args.max_update,
@@ -857,6 +922,7 @@ def main():
                         epoch,
                         step,
                         global_step,
+                        reward_continuation_only=reward_continuation_only,
                     )
             global_step += 1
 
@@ -879,14 +945,18 @@ def main():
                 args.log_generations_max_chars,
                 epoch,
                 args.objective,
+                reward_continuation_only=reward_continuation_only,
             )
 
         if (epoch + 1) % args.eval_interval == 0:
             if args.objective == "ce":
                 ev = eval_ce(model, tok, eval_data, device, args.max_length, args.batch_size)
             else:
-                ev = eval_reward(model, tok, eval_data, device,
-                                 args.max_new_tokens, args.reward_do_sample)
+                ev = eval_reward(
+                    model, tok, eval_data, device,
+                    args.max_new_tokens, args.reward_do_sample,
+                    reward_continuation_only=reward_continuation_only,
+                )
             eval_metric_history.append(ev)
             tag = "CE" if args.objective == "ce" else "reward"
             print(f"[Epoch {epoch+1}] Train metric: {mean_L:.4f} | "
