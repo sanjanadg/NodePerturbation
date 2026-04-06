@@ -1,7 +1,9 @@
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from conciseness_task.danp_llm_v1 import DANPHook, get_target_linears
+from conciseness_task.danp_llm_v3 import DANPHook, get_target_linears
+
+# python3 -m inspect_perturbations.inspect_danp_perturbations
 
 SIGMA = 0.001
 POPULATION_SIZE = 30
