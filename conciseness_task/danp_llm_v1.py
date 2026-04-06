@@ -532,7 +532,12 @@ def danp_grad_single(
         if not (np.isfinite(L_clean) and np.isfinite(L_noisy)):
             continue
 
-        delta_L = L_noisy - L_clean   # positive => noise made things worse
+        # delta_L = L_noisy - L_clean   # positive => noise made things worse
+
+        if objective == "reward":
+            delta_L = L_clean - L_noisy   # noise that HELPED → negative delta_L → subtract grad (move toward it)
+        else:
+            delta_L = L_noisy - L_clean
         delta_L_sum += delta_L
 
         # ---------------------------------------------------------------- #
