@@ -16,6 +16,9 @@ DANP:         Add eps directly to activations at each layer (cumulative:
               noise at layer t propagates into layer t+1's input).
               delta_h_t at layer t reflects accumulated upstream noise.
 
+For each candidate index, WP and DANP use the same integer seed (drawn once in
+``main()`` after ``np.random.seed(SEED)``) so RNG initialization is aligned.
+
 Both methods produce a "snowball effect" but through different mechanisms:
   WP:   snowball via noisy weights transforming already-noisy activations
   DANP: snowball via noisy activations propagating through clean weights
@@ -76,16 +79,25 @@ def _block_index(name: str):
 # ===========================================================================
 # WP: GLOBAL weight perturbation — delta_h_t per layer
 # ===========================================================================
-def inspect_wp_delta_h(model, tok, device):
+def inspect_wp_delta_h(model, tok, device, seeds):
     """
-    Global WP matching wp_conciseness.py exactly:
-        1. For each candidate seed, perturb ALL weight parameters simultaneously:
+    Global WP matching wp_conciseness.py exactly (per candidate seed).
+
+    ``seeds`` must match ``inspect_danp_delta_h`` so each candidate index
+    uses the same RNG root for fair WP vs DANP comparison.
+
+    Args:
+        seeds: length-POPULATION_SIZE list of ints (e.g. from main()).
+        1. Run one clean forward pass. Capture h_t at every target layer.
+        2. Perturb ALL weight parameters simultaneously:
                W_l += sigma * eps_l   for all l in 0..L
            using the same per-parameter seeding as the ES training script.
-        2. Run one full forward pass. Capture h̃_t at every target layer.
-        3. Restore ALL weights.
-        4. Run one clean forward pass. Capture h_t at every target layer.
+        3. Run one full forward pass. Capture h̃_t at every target layer.
+        4. Restore ALL weights (subtract the same sigma * eps).
         5. delta_h_t = ||h̃_t - h_t||
+
+    (Order is clean → noisy → restore so weights are nominal before the next
+    candidate; ||h̃ - h|| is the same as if you ran noisy first then clean.)
 
     Because all weights are perturbed together, delta_h_t at layer t
     compounds naturally: the noisy weights at layer t act on an input
@@ -105,9 +117,6 @@ def inspect_wp_delta_h(model, tok, device):
     print(f"  Weight params to perturb: {len(all_params)}")
     print(f"  Activation layers to capture: {n_layers}")
 
-    np.random.seed(SEED)
-    seeds = np.random.randint(0, 2**30, size=POPULATION_SIZE, dtype=np.int64).tolist()
-
     # results[layer_name][prompt_idx] = list of delta_h over candidates
     results = {name: {pi: [] for pi in range(len(DATASET))}
                for name in target_names}
@@ -123,6 +132,7 @@ def inspect_wp_delta_h(model, tok, device):
         print(f"  {'-'*80}")
 
         for cand_idx, seed in enumerate(seeds):
+            seed = int(seed)
 
             # Storage for activations
             h_clean    = {}
@@ -152,7 +162,7 @@ def inspect_wp_delta_h(model, tok, device):
             with torch.no_grad():
                 for param_name, param in all_params:
                     gen = torch.Generator(device=param.device)
-                    gen.manual_seed(int(seed))
+                    gen.manual_seed(seed)
                     noise = torch.randn(param.shape, generator=gen,
                                         device=param.device, dtype=param.dtype)
                     param.data.add_(SIGMA * noise)
@@ -174,7 +184,7 @@ def inspect_wp_delta_h(model, tok, device):
             with torch.no_grad():
                 for param_name, param in all_params:
                     gen = torch.Generator(device=param.device)
-                    gen.manual_seed(int(seed))
+                    gen.manual_seed(seed)
                     noise = torch.randn(param.shape, generator=gen,
                                         device=param.device, dtype=param.dtype)
                     param.data.sub_(SIGMA * noise)
@@ -202,13 +212,15 @@ def inspect_wp_delta_h(model, tok, device):
 # ===========================================================================
 # DANP: cumulative activation perturbation — delta_h_t per layer
 # ===========================================================================
-def inspect_danp_delta_h(model, tok, device):
+def inspect_danp_delta_h(model, tok, device, seeds):
     """
-    For each candidate:
+    For each candidate (same ``seeds`` list as WP):
         1. Run clean forward  → capture h_t at every layer
         2. Run noisy forward  → capture h̃_t at every layer
            (noise at layer t propagates into layer t+1's input)
         3. delta_h_t = ||h̃_t - h_t|| at each layer
+
+    ``hook.base_seed`` is set to seeds[cand_idx] so RNG matches WP per candidate.
 
     Averaged over POPULATION_SIZE candidates.
     """
@@ -237,8 +249,8 @@ def inspect_danp_delta_h(model, tok, device):
         print(f"  {'Layer':<55} {'depth':>5} {'mean delta_h':>14}")
         print(f"  {'-'*80}")
 
-        for cand_idx in range(POPULATION_SIZE):
-            pop_seed = SEED + cand_idx * 31337
+        for cand_idx, seed in enumerate(seeds):
+            pop_seed = int(seed)
 
             # Clean forward
             hook.base_seed = pop_seed
@@ -432,8 +444,11 @@ def main():
     model = model.to(device).eval()
     print(f"Device: {device}")
 
-    wp_results,   wp_targets   = inspect_wp_delta_h(model, tok, device)
-    danp_results, danp_targets = inspect_danp_delta_h(model, tok, device)
+    np.random.seed(SEED)
+    seeds = np.random.randint(0, 2**30, size=POPULATION_SIZE, dtype=np.int64).tolist()
+
+    wp_results,   wp_targets   = inspect_wp_delta_h(model, tok, device, seeds)
+    danp_results, danp_targets = inspect_danp_delta_h(model, tok, device, seeds)
     plot_and_save(wp_results, wp_targets, danp_results, danp_targets)
 
 
