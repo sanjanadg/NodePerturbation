@@ -21,8 +21,10 @@ Both methods produce a "snowball effect" but through different mechanisms:
   DANP: snowball via noisy activations propagating through clean weights
 
 Output:
-    delta_h_plot.png   — delta_h_t vs layer depth, WP vs DANP, both prompts
-    delta_h.csv        — raw numbers
+    delta_h_plot.png      — delta_h_t vs layer depth, WP vs DANP (same axes; scales may differ)
+    delta_h_plot_wp.png   — WP only (y-axis scaled for WP)
+    delta_h_plot_danp.png — DANP only (y-axis scaled for DANP)
+    delta_h.csv           — raw numbers
 
 USAGE:
     python3 -m conciseness_task.inspect_delta_h.py
@@ -280,6 +282,36 @@ def inspect_danp_delta_h(model, tok, device):
 # ===========================================================================
 # Plot and save CSV
 # ===========================================================================
+def _plot_one_method_subplots(results, targets, suptitle, out_filename, marker, color, series_label):
+    """Two prompts side by side; y-axis auto-scaled for this method only."""
+    target_names = [name for name, _ in targets]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=False)
+    for prompt_idx, ax in enumerate(axes):
+        points = []
+        for layer_idx, name in enumerate(target_names):
+            vals = results[name][prompt_idx]
+            if vals:
+                points.append((layer_idx, float(np.mean(vals)), name))
+        points.sort(key=lambda x: x[0])
+        x = [p[0] for p in points]
+        y = [p[1] for p in points]
+        ax.plot(
+            x, y, f"{marker}-", color=color, markersize=2,
+            linewidth=1.5, label=series_label,
+        )
+        ax.set_title(PROMPT_LABELS[prompt_idx], fontsize=11)
+        ax.set_xlabel("Layer index (t)", fontsize=10)
+        ax.set_ylabel("δh_t  (activation change norm)", fontsize=10)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    fig.suptitle(suptitle, fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    plot_path = os.path.join(OUTPUT_DIR, out_filename)
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Plot saved → {plot_path}")
+
+
 def plot_and_save(wp_results, wp_targets, danp_results, danp_targets):
     target_names_wp   = [name for name, _ in wp_targets]
     target_names_danp = [name for name, _ in danp_targets]
@@ -333,7 +365,23 @@ def plot_and_save(wp_results, wp_targets, danp_results, danp_targets):
 
     plot_path = os.path.join(OUTPUT_DIR, "delta_h_plot.png")
     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
     print(f"\n  Plot saved → {plot_path}")
+
+    _plot_one_method_subplots(
+        wp_results, wp_targets,
+        "δh_t vs Layer Depth: WP (global weight perturbation)",
+        "delta_h_plot_wp.png",
+        "o", "steelblue",
+        "WP (global weight perturbation)",
+    )
+    _plot_one_method_subplots(
+        danp_results, danp_targets,
+        "δh_t vs Layer Depth: DANP (cumulative activation perturbation)",
+        "delta_h_plot_danp.png",
+        "s", "tomato",
+        "DANP (cumulative activation perturbation)",
+    )
 
     csv_path = os.path.join(OUTPUT_DIR, "delta_h.csv")
     with open(csv_path, "w", newline="") as f:
