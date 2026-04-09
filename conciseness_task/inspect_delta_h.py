@@ -25,7 +25,7 @@ Output:
     delta_h.csv        — raw numbers
 
 USAGE:
-    python inspect_delta_h.py
+    python3 -m conciseness_task.inspect_delta_h.py
 """
 
 import torch
@@ -40,7 +40,7 @@ from transformers.utils import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 # UPDATE to match your project structure
-from conciseness_task.danp_llm_v2 import DANPHook, get_target_linears
+from danp_llm_v3 import DANPHook, get_target_linears
 
 # ---------------------------------------------------------------------------
 # Config — match your training scripts exactly
