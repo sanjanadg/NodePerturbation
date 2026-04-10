@@ -48,7 +48,7 @@ python danp_llm_v4.py \
   --sigma 0.01 \
   --eta 0.0005 \
   --alpha 0 \
-  --n_population 1 \
+  --n_population 5 \
   --epochs 100 \
   --batch_size 2 \
   --np_include all \
@@ -109,7 +109,10 @@ def parse_args():
     p.add_argument("--log_first_batch_each_epoch", action="store_true")
     p.add_argument("--log_generations_max_chars",  type=int, default=600)
     p.add_argument("--print_generation_each_epoch", action="store_true")
-    p.add_argument("--reward_full_string", action="store_true")
+    p.add_argument(
+        "--reward_full_string", action="store_true",
+        help="Log full decode as 'scored' segment; reward always uses full output length vs target.",
+    )
     return p.parse_args()
 
 
@@ -364,7 +367,8 @@ def generate_reward(model, tokenizer, prompt, target, device,
         scored_text = tokenizer.decode(cont_ids, skip_special_tokens=True)
     else:
         scored_text = full_text
-    r = compute_reward(scored_text, target)
+    # Reward compares target length to full model output, not continuation-only length.
+    r = compute_reward(full_text, target)
     return r, full_text, scored_text
 
 
