@@ -477,7 +477,7 @@ def danp_grad_single(
         delta_a_cat = torch.cat(delta_a_parts)
         norm_sq     = float((delta_a_cat ** 2).sum().item())
         N           = delta_a_cat.numel()
-        scale       = eta * N/2 * float(delta_L) / norm_sq
+        scale       = eta * float(delta_L) / norm_sq
         scale_values.append(scale)
 
         if verbose and pop_i == 0:
