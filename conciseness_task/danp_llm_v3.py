@@ -27,15 +27,28 @@ WHAT IS NOT IN THIS VERSION:
 USAGE:
 python danp_llm_v3.py \
   --objective reward \
-  --sigma 0.001 \
+  --sigma 0.01 \
   --eta 0.0005 \
   --alpha 0 \
-  --n_population 30 \
-  --epochs 1000 \
+  --n_population 1 \
+  --epochs 100 \
   --batch_size 2 \
   --np_include all \
   --last_k 0 \
   --max_update 1e-4 \
+  --print_generation_each_epoch \
+  --verbose
+
+  python danp_llm_v3.py \
+  --objective reward \
+  --sigma 0.01 \
+  --eta 0.0005 \
+  --alpha 0 \
+  --n_population 1 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
   --print_generation_each_epoch \
   --verbose
 """
@@ -418,10 +431,8 @@ def danp_grad_single(
     delta_L_sum  = 0.0
 
     for pop_i in range(n_population):
-        # FIX: compute new seed without mutating hook.base_seed permanently.
-        # We set it fresh before attach() so the closure snapshot picks it up.
         pop_seed = base_seed + pop_i * 31337
-        hook.base_seed = pop_seed          # set BEFORE attach so snapshot is correct
+        hook.base_seed = pop_seed
         hook.attach("noisy")
         with torch.no_grad():
             if objective == "ce":
@@ -444,10 +455,6 @@ def danp_grad_single(
         if not (np.isfinite(L_clean) and np.isfinite(L_noisy)):
             continue
 
-        # delta_L = L_noisy - L_clean for both objectives:
-        #   CE:     positive means noise made CE loss worse → move away ✓
-        #   Reward: L = -R, so delta_L = -R_noisy + R_clean = R_clean - R_noisy
-        #           positive means noise hurt reward → move away ✓
         delta_L      = L_noisy - L_clean
         delta_L_sum += delta_L
 
@@ -469,6 +476,7 @@ def danp_grad_single(
 
         delta_L_clamped = float(np.clip(delta_L, -1e4, 1e4))
         scale_raw       = eta * N * delta_L_clamped / norm_sq
+        scale_raw       = eta * delta_L_clamped / norm_sq # eliminate N to prevent exploding gradients
         scale           = float(np.clip(scale_raw, -max_scale, max_scale))
 
         if not np.isfinite(scale):
@@ -487,14 +495,12 @@ def danp_grad_single(
             a_c     = captured_clean[name]["a_clean"]
             a_n     = captured_noisy[name]["a_noisy"]
             delta_a = (a_n - a_c)
-
-            x_star = captured_clean[name]["x_star"]
+            x_star  = captured_clean[name]["x_star"]
 
             if x_star.dim() > 2:
                 x_star  = x_star.reshape(-1, x_star.shape[-1])
                 delta_a = delta_a.reshape(-1, delta_a.shape[-1])
 
-            # (out_features, in_features)
             grad   = delta_a.T @ x_star
             update = scale * grad
             update = torch.clamp(update.float(), -max_update, max_update)
