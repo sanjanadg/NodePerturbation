@@ -55,6 +55,20 @@ python danp_llm_v4.py \
   --last_k 0 \
   --print_generation_each_epoch \
   --verbose
+
+match toy
+  python danp_llm_v4.py \
+  --objective reward \
+  --sigma 0.02 \
+  --eta 0.01 \
+  --alpha 0 \
+  --n_population 5 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
+  --print_generation_each_epoch \
+  --verbose
 """
 
 import os, re, hashlib, argparse
@@ -463,7 +477,7 @@ def danp_grad_single(
         delta_a_cat = torch.cat(delta_a_parts)
         norm_sq     = float((delta_a_cat ** 2).sum().item())
         N           = delta_a_cat.numel()
-        scale       = eta * float(delta_L) / norm_sq
+        scale       = eta * N/2 * float(delta_L) / norm_sq
         scale_values.append(scale)
 
         if verbose and pop_i == 0:
