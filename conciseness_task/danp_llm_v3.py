@@ -8,24 +8,24 @@ KEY FIXES vs v1:
      In v1 every layer saw the clean input from the previous layer — this meant
      delta_a = eps exactly, making perturbations input-blind.
 
-  2. Weight update uses noisy x_star (x̃*_{l-1}) not clean x_star:
-     Algorithm 1: W_l ← W_l - η N δL * (ã_l - a_l)(x̃*_{l-1})^T / ||δa||²
-     v1 incorrectly used x*_{l-1} (clean) in the outer product.
+  2. Weight update uses **clean** x*_{l-1} in the outer product with (ã_l - a_l):
+         W_l ← W_l - η N δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
+     where x*_{l-1} is from the clean forward (same as toy danp / v1).
+     The noisy forward still supplies ã_l and drives cumulative perturbations.
 
   3. base_seed mutation bug fixed: v1 permanently mutated hook.base_seed
      inside the population loop causing seeds to drift across batches/epochs.
 
   4. Reward sign convention cleaned up and documented clearly.
 
-  5. delta_a is now truly input-dependent: because x̃*_{l-1} ≠ x*_{l-1},
-     the noisy activations reflect how upstream perturbations transformed
-     through the network, not just the raw eps added at each layer.
+  5. delta_a = ã_l - a_l is input-dependent: the noisy pass feeds cumulative
+     x̃ into deeper layers, so ã_l reflects upstream noise, not only ε_l.
 
 WHAT IS NOT IN THIS VERSION:
   - Multi-GPU / accelerate (single GPU focus).
 
 USAGE:
-python danp_llm_v2.py \
+python danp_llm_v3.py \
   --objective reward \
   --sigma 0.001 \
   --eta 0.0005 \
@@ -163,7 +163,8 @@ def _seed_for(uid: int, base: int, n_tokens: int) -> int:
 # ===========================================================================
 class DANPHook:
     """
-    Implements Algorithm 1 exactly.
+    Cumulative noisy forward (matches the noisy pass in Algorithm 1).
+    The ES weight update uses clean x* in the outer product; see ``danp_grad_single``.
 
     CLEAN forward pass (attach mode="clean"):
         x*_{l-1} = R_{l-1} @ x_{l-1}          # decorrelate input
@@ -186,7 +187,7 @@ class DANPHook:
 
     Captured per layer:
         clean:  x_star  = R @ x_clean      (input to W, clean pass)
-                a_clean = W @ x_star
+                a_clean = W @ x_star       — used with delta_a and **clean** x_star in grad
         noisy:  x_star_noisy = R @ x̃       (input to W, noisy pass — x̃ is cumulative)
                 a_noisy      = W @ x_star_noisy + eps
     """
@@ -251,11 +252,10 @@ class DANPHook:
                                         dtype=a32.dtype, generator=g) * sig
                     a_out = a32 + eps
 
-                    # Store NOISY x_star (x̃*_{l-1}) — this is what Algorithm 1
-                    # uses in the weight update outer product, NOT clean x_star.
+                    # x̃*_{l-1} for debugging; grad uses clean x*_{l-1} from captured_clean.
                     captured_noisy[name] = {
                         "x_star_noisy": x_star.detach().clone(),   # R @ x̃_{l-1}
-                        "a_noisy":      a_out.detach().clone(),     # W @ x̃*_{l-1} + eps
+                        "a_noisy":      a_out.detach().clone(),     # W @ x̃*_{l-1} + eps_l # note: eps_l is fresh noise at each laye 
                     }
                 else:
                     a_out = a32
@@ -375,11 +375,9 @@ def danp_grad_single(
     """
     Compute weight update for one (prompt, target) example.
 
-    Algorithm 1 weight update:
-        W_l ← W_l - η N δL * (ã_l - a_l)(x̃*_{l-1})^T / ||δa||²
-
-    NOTE: the outer product uses x̃*_{l-1} (noisy decorrelated input),
-    NOT x*_{l-1} (clean). This is fixed vs v1.
+    Weight update (outer product uses **clean** decorrelated input):
+        W_l ← W_l - η N δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
+    where x*_{l-1} is from the clean forward; ã_l, a_l come from noisy vs clean passes.
 
     Reward sign convention:
         compute_reward → higher is better.
@@ -481,9 +479,7 @@ def danp_grad_single(
                   f"delta_L={delta_L:.6f} N={N} norm_sq={norm_sq:.4e} "
                   f"scale_raw={scale_raw:.4e} scale={scale:.4e}")
 
-        # Per-layer weight update:
-        #   Algorithm 1: W_l -= η N δL * (ã_l - a_l)(x̃*_{l-1})^T / ||δa||²
-        #   FIX vs v1:   outer product uses x_star_NOISY not x_star_clean
+        # Per-layer weight update: grad ∝ (ã_l - a_l) (x*_{l-1})^T with x* from clean pass
         for name, mod in hook._targets:
             if name not in captured_clean or name not in captured_noisy:
                 continue
@@ -492,15 +488,14 @@ def danp_grad_single(
             a_n     = captured_noisy[name]["a_noisy"]
             delta_a = (a_n - a_c)
 
-            # FIX: use noisy x_star (x̃*_{l-1}) as in Algorithm 1
-            x_star_noisy = captured_noisy[name]["x_star_noisy"]
+            x_star = captured_clean[name]["x_star"]
 
-            if x_star_noisy.dim() > 2:
-                x_star_noisy = x_star_noisy.reshape(-1, x_star_noisy.shape[-1])
-                delta_a      = delta_a.reshape(-1, delta_a.shape[-1])
+            if x_star.dim() > 2:
+                x_star  = x_star.reshape(-1, x_star.shape[-1])
+                delta_a = delta_a.reshape(-1, delta_a.shape[-1])
 
             # (out_features, in_features)
-            grad   = delta_a.T @ x_star_noisy
+            grad   = delta_a.T @ x_star
             update = scale * grad
             update = torch.clamp(update.float(), -max_update, max_update)
 
