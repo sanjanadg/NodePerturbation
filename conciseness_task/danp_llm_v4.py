@@ -426,6 +426,7 @@ def danp_grad_single(
     # ------------------------------------------------------------------ #
     accumulated  = {}
     delta_L_sum  = 0.0
+    scale_values = []
 
     for pop_i in range(n_population):
         pop_seed = base_seed + pop_i * 31337
@@ -462,8 +463,8 @@ def danp_grad_single(
         delta_a_cat = torch.cat(delta_a_parts)
         norm_sq     = float((delta_a_cat ** 2).sum().item())
         N           = delta_a_cat.numel()
-        # scale       = eta * N * float(delta_L) / norm_sq
         scale       = eta * float(delta_L) / norm_sq
+        scale_values.append(scale)
 
         if verbose and pop_i == 0:
             print(f"\n[DANP v4 grad] L_clean={L_clean:.4f} L_noisy={L_noisy:.4f} "
@@ -508,7 +509,20 @@ def danp_grad_single(
             x_star, hook.R[name], alpha
         )
 
-    return weight_updates, decorrelation_updates, float(L_clean), float(delta_L_mean)
+    scale_mean = float(np.mean(scale_values))
+    upd_frob_sq = sum(
+        float(torch.sum(u.float() ** 2).item()) for u in weight_updates.values()
+    )
+    update_norm = float(np.sqrt(upd_frob_sq))
+
+    return (
+        weight_updates,
+        decorrelation_updates,
+        float(L_clean),
+        float(delta_L_mean),
+        scale_mean,
+        update_norm,
+    )
 
 
 # ===========================================================================
@@ -519,14 +533,15 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
                     max_new_tokens, reward_do_sample, reward_continuation_only,
                     n_population, alpha,
                     base_seed, verbose=False):
-    total_L, total_dL   = 0.0, 0.0
-    accumulated         = {}
-    accumulated_dec     = {}
+    total_L, total_dL       = 0.0, 0.0
+    total_scale, total_updn = 0.0, 0.0
+    accumulated             = {}
+    accumulated_dec         = {}
 
     for i, example in enumerate(batch):
         example_seed = base_seed + i * 997
 
-        updates, dec_updates, L_clean, dL = danp_grad_single(
+        updates, dec_updates, L_clean, dL, sc_m, up_n = danp_grad_single(
             model, tokenizer, example, device, hook,
             eta=eta, max_length=max_length, objective=objective,
             max_new_tokens=max_new_tokens, reward_do_sample=reward_do_sample,
@@ -535,8 +550,10 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             alpha=alpha, base_seed=example_seed,
             verbose=(verbose and i == 0),
         )
-        total_L  += L_clean
-        total_dL += dL
+        total_L     += L_clean
+        total_dL    += dL
+        total_scale += sc_m
+        total_updn  += up_n
 
         for key, upd in updates.items():
             if key not in accumulated:
@@ -561,7 +578,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             hook.R[name].sub_(avg.to(device=hook.R[name].device,
                                       dtype=hook.R[name].dtype))
 
-    return total_L / B, total_dL / B
+    return total_L / B, total_dL / B, total_scale / B, total_updn / B
 
 
 # ===========================================================================
@@ -693,7 +710,8 @@ def main():
     for epoch in range(args.epochs):
         model.eval()
         indices  = np.arange(len(train_data))
-        epoch_L, epoch_dL = [], []
+        epoch_dL = []
+        epoch_scale, epoch_upd_norm = [], []
 
         pbar = tqdm(range(0, len(train_data), args.batch_size),
                     desc=f"Epoch {epoch+1}/{args.epochs}")
@@ -702,7 +720,7 @@ def main():
             batch      = [train_data[i] for i in batch_idx]
             base_seed  = args.seed + epoch * 100_000 + step * 1000
 
-            L, dL = danp_batch_step(
+            _L, dL, sc_b, up_b = danp_batch_step(
                 model, tok, batch, device, hook,
                 eta=args.eta, max_length=args.max_length,
                 objective=args.objective,
@@ -713,9 +731,10 @@ def main():
                 alpha=args.alpha, base_seed=base_seed,
                 verbose=(args.verbose and step == 0 and epoch == 0),
             )
-            epoch_L.append(L)
             epoch_dL.append(dL)
-            pbar.set_postfix({"L": f"{L:.4f}", "dL": f"{dL:.4e}"})
+            epoch_scale.append(sc_b)
+            epoch_upd_norm.append(up_b)
+            pbar.set_postfix({"scale": f"{sc_b:.4e}", "||upd||": f"{up_b:.4e}"})
 
             if log_reward:
                 should_log = (args.log_first_batch_each_epoch and step == 0) or \
@@ -730,9 +749,14 @@ def main():
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        mean_L  = float(np.mean(epoch_L))
         mean_dL = float(np.mean(epoch_dL))
-        train_metric_history.append(mean_L)
+        mean_scale_ep = float(np.mean(epoch_scale))
+        mean_upd_ep   = float(np.mean(epoch_upd_norm))
+        train_metric_history.append(mean_scale_ep)
+
+        print(f"[Epoch {epoch+1}] mean scale: {mean_scale_ep:.4e} | "
+              f"mean ||update||_F (per-example applied): {mean_upd_ep:.4e} | "
+              f"mean δL: {mean_dL:.4e}")
 
         if args.print_generation_each_epoch:
             print_generations_after_epoch(
@@ -751,8 +775,7 @@ def main():
                                   reward_continuation_only)
             eval_metric_history.append(ev)
             tag = "CE" if args.objective == "ce" else "reward"
-            print(f"[Epoch {epoch+1}] Train metric: {mean_L:.4f} | "
-                  f"mean δL: {mean_dL:.4e} | Eval {tag}: {ev:.4f}")
+            print(f"  Eval {tag}: {ev:.4f}")
             if device.type == "cuda":
                 print(f"  GPU: {torch.cuda.memory_allocated()/1024**2:.1f}MB alloc, "
                       f"{torch.cuda.max_memory_allocated()/1024**2:.1f}MB peak")
