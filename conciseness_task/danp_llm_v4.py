@@ -30,17 +30,30 @@ WHAT IS NOT IN THIS VERSION:
   - Multi-GPU / accelerate (single GPU focus).
 
 USAGE:
-python danp_llm_v4.py \\
-  --objective reward \\
-  --sigma 0.01 \\
-  --eta 0.001 \\
-  --alpha 0 \\
-  --n_population 5 \\
-  --epochs 100 \\
-  --batch_size 2 \\
-  --np_include all \\
-  --last_k 0 \\
-  --print_generation_each_epoch \\
+python danp_llm_v4.py \
+  --objective reward \
+  --sigma 0.01 \
+  --eta 0.001 \
+  --alpha 0 \
+  --n_population 5 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
+  --print_generation_each_epoch \
+  --verbose
+
+python danp_llm_v4.py \
+  --objective reward \
+  --sigma 0.01 \
+  --eta 0.0005 \
+  --alpha 0 \
+  --n_population 1 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
+  --print_generation_each_epoch \
   --verbose
 """
 
@@ -337,7 +350,7 @@ def ce_loss(model, ids, mask, labs):
 # ===========================================================================
 @torch.no_grad()
 def generate_reward(model, tokenizer, prompt, target, device,
-                    max_new_tokens, do_sample, reward_continuation_only=True):
+                    max_new_tokens, do_sample, reward_continuation_only=False):
     inp  = tokenizer(prompt, return_tensors="pt", padding=True, padding_side="left")
     ids  = inp["input_ids"].to(device)
     amsk = inp["attention_mask"].to(device)
