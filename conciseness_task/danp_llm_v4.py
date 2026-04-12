@@ -56,7 +56,7 @@ python danp_llm_v4.py \
   --print_generation_each_epoch \
   --verbose
 
-match toy
+w/o N
   python danp_llm_v4.py \
   --objective reward \
   --sigma 0.02 \
@@ -69,9 +69,37 @@ match toy
   --last_k 0 \
   --print_generation_each_epoch \
   --verbose
+
+w/o N, smaller eta
+  python danp_llm_v4.py \
+  --objective reward \
+  --sigma 0.02 \
+  --eta 0.001 \
+  --alpha 0 \
+  --n_population 5 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
+  --print_generation_each_epoch \
+  --verbose
+
+
+  python danp_llm_v4.py \
+  --objective reward \
+  --sigma 0.02 \
+  --eta 0.005 \
+  --alpha 0 \
+  --n_population 5 \
+  --epochs 100 \
+  --batch_size 2 \
+  --np_include all \
+  --last_k 0 \
+  --print_generation_each_epoch \
+  --verbose
 """
 
-import os, re, hashlib, argparse
+import os, re, hashlib, argparse, json
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -126,6 +154,17 @@ def parse_args():
     p.add_argument(
         "--reward_full_string", action="store_true",
         help="Log full decode as 'scored' segment; reward always uses full output length vs target.",
+    )
+    p.add_argument(
+        "--no_save",
+        action="store_true",
+        help="Skip writing final_model (useful for hyperparameter sweeps).",
+    )
+    p.add_argument(
+        "--metrics_json",
+        type=str,
+        default="",
+        help="If set, write baseline, eval_metric_history, train_scale_history, train_reward_history, args.",
     )
     return p.parse_args()
 
@@ -715,7 +754,8 @@ def main():
                                args.reward_do_sample, reward_continuation_only)
         print(f"[BASELINE] Eval mean reward: {baseline:.4f}")
 
-    train_metric_history = []
+    train_scale_history: list[float] = []
+    train_reward_history: list[float] = []
     eval_metric_history  = []
     global_step          = 0
     log_reward = args.objective == "reward" and (
@@ -766,11 +806,22 @@ def main():
         mean_dL = float(np.mean(epoch_dL))
         mean_scale_ep = float(np.mean(epoch_scale))
         mean_upd_ep   = float(np.mean(epoch_upd_norm))
-        train_metric_history.append(mean_scale_ep)
+        train_scale_history.append(mean_scale_ep)
 
-        print(f"[Epoch {epoch+1}] mean scale: {mean_scale_ep:.4e} | "
-              f"mean ||update||_F (per-example applied): {mean_upd_ep:.4e} | "
-              f"mean δL: {mean_dL:.4e}")
+        # train_scale_history: mean η·δL/‖δa‖² per epoch (danp_grad_single scale, batch-averaged).
+        print(
+            f"[Epoch {epoch+1}] train_scale (mean η·δL/‖δa‖²): {mean_scale_ep:.4e} | "
+            f"mean ||update||_F: {mean_upd_ep:.4e} | mean δL: {mean_dL:.4e}"
+        )
+
+        if args.objective == "reward":
+            hook.detach()
+            mean_train_r = eval_reward(
+                model, tok, train_data, device,
+                args.max_new_tokens, args.reward_do_sample, reward_continuation_only,
+            )
+            train_reward_history.append(float(mean_train_r))
+            print(f"[Epoch {epoch+1}] mean train reward: {mean_train_r:.4f}", flush=True)
 
         if args.print_generation_each_epoch:
             print_generations_after_epoch(
@@ -794,10 +845,41 @@ def main():
                 print(f"  GPU: {torch.cuda.memory_allocated()/1024**2:.1f}MB alloc, "
                       f"{torch.cuda.max_memory_allocated()/1024**2:.1f}MB peak")
 
-    save_dir = os.path.join(args.output_dir, "final_model")
-    print(f"Saving to {save_dir} ...")
-    model.save_pretrained(save_dir)
-    tok.save_pretrained(save_dir)
+    print(
+        "Train scale history (mean η·δL/‖δa‖² per epoch, "
+        f"n={len(train_scale_history)}): "
+        f"{[round(float(x), 8) for x in train_scale_history]}",
+        flush=True,
+    )
+    if train_reward_history:
+        print(
+            "Mean train reward per epoch: "
+            f"{[round(float(x), 6) for x in train_reward_history]}",
+            flush=True,
+        )
+
+    metrics_payload = {
+        "baseline": float(baseline),
+        "eval_metric_history": [float(x) for x in eval_metric_history],
+        "train_scale_history": [float(x) for x in train_scale_history],
+        "train_reward_history": [float(x) for x in train_reward_history],
+        "objective": args.objective,
+        "args": vars(args),
+    }
+    if args.metrics_json:
+        out_path = os.path.abspath(args.metrics_json)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(metrics_payload, f, indent=2)
+        print(f"Wrote metrics to {out_path}")
+
+    if not args.no_save:
+        save_dir = os.path.join(args.output_dir, "final_model")
+        print(f"Saving to {save_dir} ...")
+        model.save_pretrained(save_dir)
+        tok.save_pretrained(save_dir)
+    else:
+        print("Skipping model save (--no_save).")
     print("Done.")
 
 
