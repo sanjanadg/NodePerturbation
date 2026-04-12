@@ -124,13 +124,11 @@ DEFAULT_POPULATION = 1
 def scale_n_factor(mode: str, n: int) -> float:
     """
     Multiplier for DANP scale: scale = eta * factor * delta_L / ||δa||²
-    with N = numel(δa). Modes: one→1, n→N, n_half→N/2, sqrt_n→√N.
+    with N = numel(δa). Modes: n→N, n_half→N/2, sqrt_n→√N.
     """
     if n < 1:
         n = 1
-    m = (mode or "one").strip().lower().replace("-", "_")
-    if m in ("one", "none", "1", "identity"):
-        return 1.0
+    m = (mode or "n").strip().lower().replace("-", "_")
     if m in ("n", "full_n"):
         return float(n)
     if m in ("n_half", "half_n", "n_div_2"):
@@ -138,7 +136,7 @@ def scale_n_factor(mode: str, n: int) -> float:
     if m in ("sqrt_n", "sqrtn", "sqrt"):
         return float(math.sqrt(n))
     raise ValueError(
-        f"Unknown --scale_n_mode {mode!r}; use one, n, n_half, sqrt_n"
+        f"Unknown --scale_n_mode {mode!r}; use n, n_half, sqrt_n"
     )
 
 
@@ -165,9 +163,9 @@ def parse_args():
     p.add_argument(
         "--scale_n_mode",
         default="n",
-        choices=["one", "n", "n_half", "sqrt_n"],
+        choices=["n", "n_half", "sqrt_n"],
         help="Multiplier on scale = η·f(N)·δL/‖δa‖² with N=numel(δa): "
-        "one→1, n→N, n_half→N/2, sqrt_n→√N.",
+        "n→N, n_half→N/2, sqrt_n→√N.",
     )
     p.add_argument("--objective",     default="ce", choices=["ce", "reward"])
     p.add_argument("--reward_do_sample", action="store_true")
@@ -469,7 +467,7 @@ def danp_grad_single(
 
     Weight update (outer product uses **clean** decorrelated input):
         W_l ← W_l - η f(N) δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
-        with f(N) from ``scale_n_mode`` (one, n, n_half, sqrt_n).
+        with f(N) from ``scale_n_mode`` (n, n_half, sqrt_n).
     where x*_{l-1} is from the clean forward; ã_l, a_l come from noisy vs clean passes.
 
     Reward sign convention:

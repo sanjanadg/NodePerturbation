@@ -8,9 +8,9 @@ every trial, and you get baseline vs eval curve in JSON.
 Practical knobs (comma-separated lists, no spaces inside numbers):
 
   --sigmas   --etas   --alphas   --n_populations   --np_includes   --last_ks
-  --scale_n_modes   (one | n | n_half | sqrt_n for scale = η·f(N)·δL/‖δa‖²; default: n only)
+  --scale_n_modes   (n | n_half | sqrt_n for scale = η·f(N)·δL/‖δa‖²; default: n only)
 
-  Ablate N scaling: --scale_n_modes one,n_half,sqrt_n,n
+  Ablate N scaling: --scale_n_modes n_half,sqrt_n,n
 
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
@@ -23,8 +23,8 @@ Example (reward — same grid knobs as CE; lists below are the defaults if omitt
     --n_populations 1,4 \
     --np_includes mlp,all \
     --last_ks 0 \
-    --scale_n_modes one,n_half,sqrt_n,n \
-    --results_dir conciseness_task/results_danp_sweep_reward
+    --scale_n_modes n_half,sqrt_n,n \
+    --results_dir conciseness_task/results_danp_sweep_reward_2
 
 CE objective often shows clearer loss movement on the dummy task than reward.
 
@@ -34,7 +34,7 @@ Example (CE):
     --epochs 30 --objective ce \\
     --sigmas 0.001,0.01 \\
     --etas 0.001,0.01,0.1 \\
-    --scale_n_modes one,n_half,sqrt_n,n \\
+    --scale_n_modes n_half,sqrt_n,n \\
     --results_dir conciseness_task/results_danp_sweep_ce
 """
 
@@ -83,9 +83,9 @@ def main():
     p.add_argument(
         "--scale_n_modes",
         default="n",
-        help="Comma-separated: one (×1), n (×N), n_half (×N/2), sqrt_n (×√N) for "
+        help="Comma-separated: n (×N), n_half (×N/2), sqrt_n (×√N) for "
         "scale = η·f(N)·δL/‖δa‖² in danp_llm_v4.py. "
-        "Ablate all four with: one,n_half,sqrt_n,n",
+        "Ablate with: n_half,sqrt_n,n",
     )
     p.add_argument("--results_dir", default="", help="Output dir for metrics + summary CSV")
     p.add_argument("--dry_run", action="store_true", help="Print commands only")
@@ -101,7 +101,7 @@ def main():
     includes = _parse_str_list(args.np_includes)
     last_ks = _parse_int_list(args.last_ks)
     scale_modes = _parse_str_list(args.scale_n_modes)
-    allowed_sn = {"one", "n", "n_half", "sqrt_n"}
+    allowed_sn = {"n", "n_half", "sqrt_n"}
     for sm in scale_modes:
         if sm not in allowed_sn:
             sys.exit(f"Invalid scale_n_mode: {sm!r}; use {sorted(allowed_sn)}")
