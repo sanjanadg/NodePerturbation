@@ -99,7 +99,7 @@ w/o N, smaller eta
   --verbose
 """
 
-import os, re, hashlib, argparse, json
+import os, re, hashlib, argparse, json, math
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -119,6 +119,27 @@ DEFAULT_SIGMA      = 1e-3
 DEFAULT_ALPHA      = 1e-4
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_POPULATION = 1
+
+
+def scale_n_factor(mode: str, n: int) -> float:
+    """
+    Multiplier for DANP scale: scale = eta * factor * delta_L / ||δa||²
+    with N = numel(δa). Modes: one→1, n→N, n_half→N/2, sqrt_n→√N.
+    """
+    if n < 1:
+        n = 1
+    m = (mode or "one").strip().lower().replace("-", "_")
+    if m in ("one", "none", "1", "identity"):
+        return 1.0
+    if m in ("n", "full_n"):
+        return float(n)
+    if m in ("n_half", "half_n", "n_div_2"):
+        return float(n) * 0.5
+    if m in ("sqrt_n", "sqrtn", "sqrt"):
+        return float(math.sqrt(n))
+    raise ValueError(
+        f"Unknown --scale_n_mode {mode!r}; use one, n, n_half, sqrt_n"
+    )
 
 
 # ===========================================================================
@@ -141,6 +162,13 @@ def parse_args():
                    choices=["head", "attn", "mlp", "all"])
     p.add_argument("--last_k",        type=int,   default=0)
     p.add_argument("--n_population",  type=int,   default=DEFAULT_POPULATION)
+    p.add_argument(
+        "--scale_n_mode",
+        default="n",
+        choices=["one", "n", "n_half", "sqrt_n"],
+        help="Multiplier on scale = η·f(N)·δL/‖δa‖² with N=numel(δa): "
+        "one→1, n→N, n_half→N/2, sqrt_n→√N.",
+    )
     p.add_argument("--objective",     default="ce", choices=["ce", "reward"])
     p.add_argument("--reward_do_sample", action="store_true")
     p.add_argument("--precision",     default="bf16", choices=["fp16","bf16","fp32"])
@@ -434,12 +462,14 @@ def danp_grad_single(
     max_new_tokens, reward_do_sample, reward_continuation_only,
     n_population, alpha,
     base_seed, verbose=False,
+    scale_n_mode: str = "n",
 ):
     """
     Compute weight update for one (prompt, target) example.
 
     Weight update (outer product uses **clean** decorrelated input):
-        W_l ← W_l - η N δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
+        W_l ← W_l - η f(N) δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
+        with f(N) from ``scale_n_mode`` (one, n, n_half, sqrt_n).
     where x*_{l-1} is from the clean forward; ã_l, a_l come from noisy vs clean passes.
 
     Reward sign convention:
@@ -516,12 +546,15 @@ def danp_grad_single(
         delta_a_cat = torch.cat(delta_a_parts)
         norm_sq     = float((delta_a_cat ** 2).sum().item())
         N           = delta_a_cat.numel()
-        scale       = eta * float(delta_L) / norm_sq
+        scale       = eta * scale_n_factor(scale_n_mode, N) * float(delta_L) / norm_sq
         scale_values.append(scale)
 
         if verbose and pop_i == 0:
-            print(f"\n[DANP v4 grad] L_clean={L_clean:.4f} L_noisy={L_noisy:.4f} "
-                  f"delta_L={delta_L:.6f} N={N} norm_sq={norm_sq:.4e} scale={scale:.4e}")
+            print(
+                f"\n[DANP v4 grad] L_clean={L_clean:.4f} L_noisy={L_noisy:.4f} "
+                f"delta_L={delta_L:.6f} N={N} f(N)={scale_n_factor(scale_n_mode, N):.6g} "
+                f"norm_sq={norm_sq:.4e} scale={scale:.4e}"
+            )
 
         # Per-layer weight update: grad ∝ (ã_l - a_l) (x*_{l-1})^T with x* from clean pass
         for name, mod in hook._targets:
@@ -585,7 +618,8 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
                     eta, max_length, objective,
                     max_new_tokens, reward_do_sample, reward_continuation_only,
                     n_population, alpha,
-                    base_seed, verbose=False):
+                    base_seed, verbose=False,
+                    scale_n_mode: str = "n"):
     total_L, total_dL       = 0.0, 0.0
     total_scale, total_updn = 0.0, 0.0
     accumulated             = {}
@@ -602,6 +636,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             n_population=n_population,
             alpha=alpha, base_seed=example_seed,
             verbose=(verbose and i == 0),
+            scale_n_mode=scale_n_mode,
         )
         total_L     += L_clean
         total_dL    += dL
@@ -745,6 +780,7 @@ def main():
     total_params = sum(mod.weight.numel() for _, mod in hook._targets)
     print(f"Perturbing {n_targets} Linear layers, {total_params:,} weight parameters")
     print(f"R decorrelation: {'enabled alpha='+str(args.alpha) if args.alpha > 0 else 'disabled'}")
+    print(f"scale_n_mode={args.scale_n_mode}  (scale = η · f(N) · δL / ‖δa‖²)")
 
     if args.objective == "ce":
         baseline = eval_ce(model, tok, eval_data, device, args.max_length, args.batch_size)
@@ -784,6 +820,7 @@ def main():
                 n_population=args.n_population,
                 alpha=args.alpha, base_seed=base_seed,
                 verbose=(args.verbose and step == 0 and epoch == 0),
+                scale_n_mode=args.scale_n_mode,
             )
             epoch_dL.append(dL)
             epoch_scale.append(sc_b)

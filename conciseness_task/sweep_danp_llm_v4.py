@@ -8,6 +8,9 @@ every trial, and you get baseline vs eval curve in JSON.
 Practical knobs (comma-separated lists, no spaces inside numbers):
 
   --sigmas   --etas   --alphas   --n_populations   --np_includes   --last_ks
+  --scale_n_modes   (one | n | n_half | sqrt_n for scale = η·f(N)·δL/‖δa‖²; default: n only)
+
+  Ablate N scaling: --scale_n_modes one,n_half,sqrt_n,n
 
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
@@ -20,6 +23,7 @@ Example (reward — same grid knobs as CE; lists below are the defaults if omitt
     --n_populations 1,4 \
     --np_includes mlp,all \
     --last_ks 0 \
+    --scale_n_modes one,n_half,sqrt_n,n \
     --results_dir conciseness_task/results_danp_sweep_reward
 
 CE objective often shows clearer loss movement on the dummy task than reward.
@@ -30,6 +34,7 @@ Example (CE):
     --epochs 30 --objective ce \\
     --sigmas 0.001,0.01 \\
     --etas 0.001,0.01,0.1 \\
+    --scale_n_modes one,n_half,sqrt_n,n \\
     --results_dir conciseness_task/results_danp_sweep_ce
 """
 
@@ -75,6 +80,13 @@ def main():
     p.add_argument("--n_populations", default="1,4", help="Comma-separated ints")
     p.add_argument("--np_includes", default="mlp,all", help="Comma-separated: head,attn,mlp,all")
     p.add_argument("--last_ks", default="0", help="Comma-separated ints")
+    p.add_argument(
+        "--scale_n_modes",
+        default="n",
+        help="Comma-separated: one (×1), n (×N), n_half (×N/2), sqrt_n (×√N) for "
+        "scale = η·f(N)·δL/‖δa‖² in danp_llm_v4.py. "
+        "Ablate all four with: one,n_half,sqrt_n,n",
+    )
     p.add_argument("--results_dir", default="", help="Output dir for metrics + summary CSV")
     p.add_argument("--dry_run", action="store_true", help="Print commands only")
     args = p.parse_args()
@@ -88,6 +100,11 @@ def main():
     n_pops = _parse_int_list(args.n_populations)
     includes = _parse_str_list(args.np_includes)
     last_ks = _parse_int_list(args.last_ks)
+    scale_modes = _parse_str_list(args.scale_n_modes)
+    allowed_sn = {"one", "n", "n_half", "sqrt_n"}
+    for sm in scale_modes:
+        if sm not in allowed_sn:
+            sys.exit(f"Invalid scale_n_mode: {sm!r}; use {sorted(allowed_sn)}")
 
     for inc in includes:
         if inc not in {"head", "attn", "mlp", "all"}:
@@ -103,7 +120,7 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     combos = list(
-        itertools.product(sigmas, etas, alphas, n_pops, includes, last_ks)
+        itertools.product(sigmas, etas, alphas, n_pops, includes, last_ks, scale_modes)
     )
     print(f"Total runs: {len(combos)}  ->  {results_dir}")
 
@@ -111,8 +128,11 @@ def main():
     env = os.environ.copy()
     env.setdefault("TQDM_DISABLE", "1")
 
-    for run_idx, (sigma, eta, alpha, n_pop, np_inc, last_k) in enumerate(combos):
-        tag = f"run_{run_idx:04d}_s{sigma:g}_e{eta:g}_a{alpha:g}_p{n_pop}_{np_inc}_k{last_k}"
+    for run_idx, (sigma, eta, alpha, n_pop, np_inc, last_k, sn_mode) in enumerate(combos):
+        tag = (
+            f"run_{run_idx:04d}_s{sigma:g}_e{eta:g}_a{alpha:g}_p{n_pop}_{np_inc}_k{last_k}_"
+            f"sn_{sn_mode}"
+        )
         tag = tag.replace(".", "p")  # filesystem-friendly
         out_dir = results_dir / tag
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +165,8 @@ def main():
             np_inc,
             "--last_k",
             str(last_k),
+            "--scale_n_mode",
+            sn_mode,
             "--objective",
             args.objective,
             "--precision",
@@ -176,6 +198,7 @@ def main():
             "n_population": n_pop,
             "np_include": np_inc,
             "last_k": last_k,
+            "scale_n_mode": sn_mode,
             "exit_code": proc.returncode,
             "seconds": round(elapsed, 2),
         }
@@ -209,6 +232,7 @@ def main():
             "n_population",
             "np_include",
             "last_k",
+            "scale_n_mode",
             "baseline",
             "final_eval",
             "delta_eval",
