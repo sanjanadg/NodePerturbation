@@ -12,14 +12,14 @@ Practical knobs (comma-separated lists, no spaces inside numbers):
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
   cd /path/to/NodePerturbation
-  TQDM_DISABLE=1 python3 conciseness_task/sweep_danp_llm_v4.py \\
-    --epochs 20 --objective reward \\
-    --sigmas 0.001,0.005,0.01 \\
-    --etas 0.0005,0.001,0.003 \\
-    --alphas 0,0.0001 \\
-    --n_populations 1,4 \\
-    --np_includes mlp,all \\
-    --last_ks 0 \\
+  TQDM_DISABLE=1 python3 conciseness_task/sweep_danp_llm_v4.py \
+    --epochs 20 --objective reward \
+    --sigmas 0.001,0.005,0.01 \
+    --etas 0.0005,0.001,0.003 \
+    --alphas 0,0.0001 \
+    --n_populations 1,4 \
+    --np_includes mlp,all \
+    --last_ks 0 \
     --results_dir conciseness_task/results_danp_sweep_reward
 
 CE objective often shows clearer loss movement on the dummy task than reward.
@@ -33,8 +33,6 @@ Example (CE):
     --results_dir conciseness_task/results_danp_sweep_ce
 """
 
-from __future__ import annotations
-
 import argparse
 import csv
 import itertools
@@ -44,21 +42,22 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Dict, List
 
 
-def _parse_float_list(s: str) -> list[float]:
+def _parse_float_list(s):
     return [float(x.strip()) for x in s.split(",") if x.strip()]
 
 
-def _parse_int_list(s: str) -> list[int]:
+def _parse_int_list(s):
     return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 
-def _parse_str_list(s: str) -> list[str]:
+def _parse_str_list(s):
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
-def main() -> None:
+def main():
     p = argparse.ArgumentParser(description="Hyperparameter sweep for danp_llm_v4.py")
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--batch_size", type=int, default=2)
@@ -108,7 +107,7 @@ def main() -> None:
     )
     print(f"Total runs: {len(combos)}  ->  {results_dir}")
 
-    summary_rows: list[dict] = []
+    summary_rows = []  # type: List[Dict]
     env = os.environ.copy()
     env.setdefault("TQDM_DISABLE", "1")
 
@@ -169,7 +168,7 @@ def main() -> None:
         t0 = time.time()
         proc = subprocess.run(cmd, cwd=str(repo_root), env=env)
         elapsed = time.time() - t0
-        row: dict = {
+        row = {
             "run_idx": run_idx,
             "sigma": sigma,
             "eta": eta,
