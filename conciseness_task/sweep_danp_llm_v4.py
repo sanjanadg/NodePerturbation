@@ -12,19 +12,25 @@ Practical knobs (comma-separated lists, no spaces inside numbers):
 
   Ablate N scaling: --scale_n_modes n_half,sqrt_n,n
 
+  Reward-only generation: --reward_do_samples false,true
+    (passed through as danp_llm_v4.py --reward_do_sample when true; default is
+    false,true for --objective reward, and false only for --objective ce)
+
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
   cd /path/to/NodePerturbation
   TQDM_DISABLE=1 python3 conciseness_task/sweep_danp_llm_v4.py \
     --epochs 20 --objective reward \
-    --sigmas 0.001,0.005,0.01 \
-    --etas 0.0005,0.001,0.003 \
-    --alphas 0,0.0001 \
-    --n_populations 1,4 \
+    --sigmas 0.001 \
+    --etas 0.001 \
+    --alphas 0 \
+    --n_populations 1,10 \
     --np_includes mlp,all \
     --last_ks 0 \
-    --scale_n_modes n_half,sqrt_n,n \
-    --results_dir conciseness_task/results_danp_sweep_reward_2
+    --scale_n_modes sqrt_n, 2*sqrt_n, n \
+    --reward_do_samples false,true \
+    --print_generation_each_epoch \
+    --results_dir conciseness_task/results_danp_sweep_reward_412
 
 CE objective often shows clearer loss movement on the dummy task than reward.
 
@@ -62,6 +68,23 @@ def _parse_str_list(s):
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
+def _parse_bool_list(s: str) -> List[bool]:
+    out: List[bool] = []
+    for tok in s.split(","):
+        t = tok.strip().lower()
+        if not t:
+            continue
+        if t in ("0", "false", "f", "no", "n"):
+            out.append(False)
+        elif t in ("1", "true", "t", "yes", "y"):
+            out.append(True)
+        else:
+            sys.exit(f"Invalid bool in --reward_do_samples: {tok!r} (use false,true)")
+    if not out:
+        sys.exit("--reward_do_samples must list at least one of false,true")
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description="Hyperparameter sweep for danp_llm_v4.py")
     p.add_argument("--epochs", type=int, default=15)
@@ -87,9 +110,21 @@ def main():
         "scale = η·f(N)·δL/‖δa‖² in danp_llm_v4.py. "
         "Ablate with: n_half,sqrt_n,n",
     )
+    p.add_argument(
+        "--reward_do_samples",
+        default=None,
+        help="Comma-separated false/true: reward-path generation do_sample in "
+        "danp_llm_v4.py. Default: false,true when --objective reward; false only when ce.",
+    )
     p.add_argument("--results_dir", default="", help="Output dir for metrics + summary CSV")
     p.add_argument("--dry_run", action="store_true", help="Print commands only")
     args = p.parse_args()
+
+    if args.reward_do_samples is None:
+        args.reward_do_samples = (
+            "false,true" if args.objective == "reward" else "false"
+        )
+    reward_do_samples = _parse_bool_list(args.reward_do_samples)
 
     repo_root = Path(__file__).resolve().parents[1]
     v4_script = Path(__file__).resolve().parent / "danp_llm_v4.py"
@@ -120,7 +155,16 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     combos = list(
-        itertools.product(sigmas, etas, alphas, n_pops, includes, last_ks, scale_modes)
+        itertools.product(
+            sigmas,
+            etas,
+            alphas,
+            n_pops,
+            includes,
+            last_ks,
+            scale_modes,
+            reward_do_samples,
+        )
     )
     print(f"Total runs: {len(combos)}  ->  {results_dir}")
 
@@ -128,10 +172,13 @@ def main():
     env = os.environ.copy()
     env.setdefault("TQDM_DISABLE", "1")
 
-    for run_idx, (sigma, eta, alpha, n_pop, np_inc, last_k, sn_mode) in enumerate(combos):
+    for run_idx, (sigma, eta, alpha, n_pop, np_inc, last_k, sn_mode, r_sample) in enumerate(
+        combos
+    ):
+        rs_tag = "rs1" if r_sample else "rs0"
         tag = (
             f"run_{run_idx:04d}_s{sigma:g}_e{eta:g}_a{alpha:g}_p{n_pop}_{np_inc}_k{last_k}_"
-            f"sn_{sn_mode}"
+            f"sn_{sn_mode}_{rs_tag}"
         )
         tag = tag.replace(".", "p")  # filesystem-friendly
         out_dir = results_dir / tag
@@ -181,6 +228,8 @@ def main():
             "--metrics_json",
             str(metrics_path),
         ]
+        if r_sample:
+            cmd.append("--reward_do_sample")
 
         print(f"\n[{run_idx + 1}/{len(combos)}] {tag}")
         if args.dry_run:
@@ -199,6 +248,7 @@ def main():
             "np_include": np_inc,
             "last_k": last_k,
             "scale_n_mode": sn_mode,
+            "reward_do_sample": int(r_sample),
             "exit_code": proc.returncode,
             "seconds": round(elapsed, 2),
         }
@@ -233,6 +283,7 @@ def main():
             "np_include",
             "last_k",
             "scale_n_mode",
+            "reward_do_sample",
             "baseline",
             "final_eval",
             "delta_eval",
@@ -257,6 +308,7 @@ def main():
                 "Best by delta_eval (reward — higher is better): "
                 f"sigma={best['sigma']} eta={best['eta']} alpha={best['alpha']} "
                 f"n_pop={best['n_population']} include={best['np_include']} last_k={best['last_k']} "
+                f"reward_do_sample={best['reward_do_sample']} "
                 f"delta={best['delta_eval']}"
             )
         elif ok and args.objective == "ce":
@@ -265,6 +317,7 @@ def main():
                 "Best by delta_eval (CE — more negative delta = larger loss drop): "
                 f"sigma={best['sigma']} eta={best['eta']} alpha={best['alpha']} "
                 f"n_pop={best['n_population']} include={best['np_include']} last_k={best['last_k']} "
+                f"reward_do_sample={best['reward_do_sample']} "
                 f"delta={best['delta_eval']}  (final={best['final_eval']})"
             )
 
