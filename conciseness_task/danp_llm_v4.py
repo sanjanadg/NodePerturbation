@@ -97,15 +97,65 @@ w/o N, smaller eta
   --last_k 0 \
   --print_generation_each_epoch \
   --verbose
+
+Example (reward; matches sweep tag ``..._p4_mlp_k0_sn_sqrt_n`` — run from repo root):
+
+  cd /path/to/NodePerturbation
+  python3 danp_llm_v4.py \
+    --objective reward \
+    --sigma 0.001 \
+    --eta 0.001 \
+    --alpha 0 \
+    --n_population 4 \
+    --epochs 20 \
+    --batch_size 2 \
+    --np_include mlp \
+    --last_k 0 \
+    --scale_n_mode sqrt_n \
+    --print_generation_each_epoch \
+    --verbose
+
+ python3 danp_llm_v4.py \
+    --objective reward \
+    --sigma 0.001 \
+    --eta 0.001 \
+    --alpha 0 \
+    --n_population 10 \
+    --epochs 20 \
+    --batch_size 2 \
+    --np_include mlp \
+    --last_k 0 \
+    --scale_n_mode sqrt_n \
+    --print_generation_each_epoch \
+    --verbose \
+    --reward_do_sample \
+
+ python3 danp_llm_v4.py \
+    --objective reward \
+    --sigma 0.001 \
+    --eta 0.001 \
+    --alpha 0 \
+    --n_population 30 \
+    --epochs 20 \
+    --batch_size 2 \
+    --np_include mlp \
+    --last_k 0 \
+    --scale_n_mode sqrt_n \
+    --print_generation_each_epoch \
+    --verbose \
+    --reward_do_sample \
+
 """
 
-import os, re, hashlib, argparse, json, math
+import math
+import os, re, hashlib, argparse, json
 import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging as hf_logging
+
 
 hf_logging.set_verbosity_error()
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -124,7 +174,7 @@ DEFAULT_POPULATION = 1
 def scale_n_factor(mode: str, n: int) -> float:
     """
     Multiplier for DANP scale: scale = eta * factor * delta_L / ||δa||²
-    with N = numel(δa). Modes: n→N, n_half→N/2, sqrt_n→√N.
+    with N = numel(δa). Modes: n→N, n_half→N/2, sqrt_n→√N , cube_root_n→N^{1/3}, two_sqrt_n→2√N, half_sqrt_n→½√N, n_2_3→N^{2/3}.
     """
     if n < 1:
         n = 1
@@ -135,10 +185,17 @@ def scale_n_factor(mode: str, n: int) -> float:
         return float(n) * 0.5
     if m in ("sqrt_n", "sqrtn", "sqrt"):
         return float(math.sqrt(n))
+    if m in ("cube_root_n", "cbrt_n", "n_cbrt", "nthroot_3"):
+        return float(n ** (1.0 / 3.0))
+    if m in ("two_sqrt_n", "2_sqrt_n", "double_sqrt_n", "sqrt_n_times_2"):
+        return 2.0 * float(math.sqrt(n))
+    if m in ("half_sqrt_n", "sqrt_n_half", "one_half_sqrt_n", "0_5_sqrt_n", "sqrt_n_div_2"):
+        return 0.5 * float(math.sqrt(n))
+    if m in ("n_2_3"):
+        return float(n ** (2.0 / 3.0))
     raise ValueError(
         f"Unknown --scale_n_mode {mode!r}; use n, n_half, sqrt_n"
     )
-
 
 # ===========================================================================
 # Argument parsing
@@ -478,6 +535,8 @@ def danp_grad_single(
         If noise HURT    (R_noisy < R_clean): delta_L > 0 → scale > 0 → W -= positive → W moves away from noise direction ✓
     """
     prompt, target = example
+    r_clean_reward = None
+    r_noisy_rewards = []
 
     # ------------------------------------------------------------------ #
     # 1. Clean forward pass                                                #
