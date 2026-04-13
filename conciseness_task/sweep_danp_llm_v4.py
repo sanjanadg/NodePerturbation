@@ -7,10 +7,14 @@ every trial, and you get baseline vs eval curve in JSON.
 
 Practical knobs (comma-separated lists, no spaces inside numbers):
 
+  Shell: do not put a space after a comma in a list, or the next word becomes a
+  separate argv token (e.g. ``--scale_n_modes sqrt_n, n`` breaks: use
+  ``--scale_n_modes sqrt_n,n`` or ``--scale_n_modes 'sqrt_n, n'``).
+
   --sigmas   --etas   --alphas   --n_populations   --np_includes   --last_ks
   --scale_n_modes   (n | n_half | sqrt_n for scale = η·f(N)·δL/‖δa‖²; default: n only)
 
-  Ablate N scaling: --scale_n_modes n_half,sqrt_n,n
+  Ablate N scaling: --scale_n_modes n_half,sqrt_n,n,cube_root_n,two_sqrt_n,half_sqrt_n,n_2_3
 
   Reward-only generation: --reward_do_samples false,true
     (passed through as danp_llm_v4.py --reward_do_sample when true; default is
@@ -22,18 +26,18 @@ Practical knobs (comma-separated lists, no spaces inside numbers):
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
   cd /path/to/NodePerturbation
-  TQDM_DISABLE=1 python3 conciseness_task/sweep_danp_llm_v4.py \
+  TQDM_DISABLE=1 python3 sweep_danp_llm_v4.py \
     --epochs 20 --objective reward \
     --sigmas 0.001 \
     --etas 0.001 \
     --alphas 0 \
-    --n_populations 1,10 \
+    --n_populations 1,10,30 \
     --np_includes mlp,all \
     --last_ks 0 \
-    --scale_n_modes sqrt_n,n \
+    --scale_n_modes sqrt_n,cube_root_n,two_sqrt_n,half_sqrt_n,n_2_3 \
     --reward_do_samples false,true \
     --print_generation_each_epoch \
-    --results_dir conciseness_task/results_danp_sweep_reward_413
+    --results_dir conciseness_task/results_danp_sweep_reward_413_3
 
 CE objective often shows clearer loss movement on the dummy task than reward.
 
@@ -144,7 +148,7 @@ def main():
     includes = _parse_str_list(args.np_includes)
     last_ks = _parse_int_list(args.last_ks)
     scale_modes = _parse_str_list(args.scale_n_modes)
-    allowed_sn = {"n", "n_half", "sqrt_n"}
+    allowed_sn = {"n", "n_half", "sqrt_n", "cube_root_n", "two_sqrt_n", "half_sqrt_n", "n_2_3"}
     for sm in scale_modes:
         if sm not in allowed_sn:
             sys.exit(f"Invalid scale_n_mode: {sm!r}; use {sorted(allowed_sn)}")
