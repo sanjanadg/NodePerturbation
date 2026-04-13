@@ -16,6 +16,9 @@ Practical knobs (comma-separated lists, no spaces inside numbers):
     (passed through as danp_llm_v4.py --reward_do_sample when true; default is
     false,true for --objective reward, and false only for --objective ce)
 
+  The sweep only forwards flags it defines. For v4-only options (e.g. generation
+  dumps), pass the matching sweep flag such as --print_generation_each_epoch.
+
 Example (reward — same grid knobs as CE; lists below are the defaults if omitted):
 
   cd /path/to/NodePerturbation
@@ -27,10 +30,10 @@ Example (reward — same grid knobs as CE; lists below are the defaults if omitt
     --n_populations 1,10 \
     --np_includes mlp,all \
     --last_ks 0 \
-    --scale_n_modes sqrt_n, 2*sqrt_n, n \
+    --scale_n_modes sqrt_n,n \
     --reward_do_samples false,true \
     --print_generation_each_epoch \
-    --results_dir conciseness_task/results_danp_sweep_reward_412
+    --results_dir conciseness_task/results_danp_sweep_reward_413
 
 CE objective often shows clearer loss movement on the dummy task than reward.
 
@@ -118,6 +121,11 @@ def main():
     )
     p.add_argument("--results_dir", default="", help="Output dir for metrics + summary CSV")
     p.add_argument("--dry_run", action="store_true", help="Print commands only")
+    p.add_argument(
+        "--print_generation_each_epoch",
+        action="store_true",
+        help="Forward to danp_llm_v4.py (print sample generations after each epoch).",
+    )
     args = p.parse_args()
 
     if args.reward_do_samples is None:
@@ -230,6 +238,8 @@ def main():
         ]
         if r_sample:
             cmd.append("--reward_do_sample")
+        if args.print_generation_each_epoch:
+            cmd.append("--print_generation_each_epoch")
 
         print(f"\n[{run_idx + 1}/{len(combos)}] {tag}")
         if args.dry_run:
