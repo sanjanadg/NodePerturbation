@@ -135,7 +135,22 @@ Example (reward; matches sweep tag ``..._p4_mlp_k0_sn_sqrt_n`` — run from repo
     --sigma 0.001 \
     --eta 0.001 \
     --alpha 0 \
-    --n_population 30 \
+    --n_population 10 \
+    --epochs 20 \
+    --batch_size 2 \
+    --np_include mlp \
+    --last_k 0 \
+    --scale_n_mode sqrt_n \
+    --print_generation_each_epoch \
+    --verbose \
+    --reward_do_sample \
+
+python3 danp_llm_v4.py \
+    --objective reward \
+    --sigma 0.001 \
+    --eta 0.001 \
+    --alpha 0 \
+    --n_population 5 \
     --epochs 20 \
     --batch_size 2 \
     --np_include mlp \
@@ -156,8 +171,74 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging as hf_logging
 
-
 hf_logging.set_verbosity_error()
+
+# --- scale_n_mode (keep in sync with sweep_danp_llm_v4.py) ---------------------------
+CANONICAL_SCALE_N_MODES = frozenset(
+    {
+        "n",
+        "n_half",
+        "sqrt_n",
+        "cube_root_n",
+        "two_sqrt_n",
+        "half_sqrt_n",
+        "n_2_3",
+    }
+)
+
+
+def normalize_scale_n_mode(mode: str) -> str:
+    """Return canonical --scale_n_mode name or raise ValueError."""
+    m = (mode or "n").strip().lower().replace("-", "_")
+    if m in ("n", "full_n"):
+        return "n"
+    if m in ("n_half", "half_n", "n_div_2"):
+        return "n_half"
+    if m in ("sqrt_n", "sqrtn", "sqrt"):
+        return "sqrt_n"
+    if m in ("cube_root_n", "cbrt_n", "n_cbrt", "nthroot_3"):
+        return "cube_root_n"
+    if m in ("two_sqrt_n", "2_sqrt_n", "double_sqrt_n", "sqrt_n_times_2"):
+        return "two_sqrt_n"
+    if m in (
+        "half_sqrt_n",
+        "sqrt_n_half",
+        "one_half_sqrt_n",
+        "0_5_sqrt_n",
+        "sqrt_n_div_2",
+    ):
+        return "half_sqrt_n"
+    if m in ("n_2_3", "n_pow_2_3", "nthroot_2_3", "n_two_thirds", "two_thirds_n"):
+        return "n_2_3"
+    raise ValueError(
+        "Unknown scale_n_mode; use one of "
+        + ", ".join(sorted(CANONICAL_SCALE_N_MODES))
+        + " (aliases allowed, e.g. 2_sqrt_n → two_sqrt_n)."
+    )
+
+
+def scale_n_factor(mode: str, n: int) -> float:
+    """Scalar f(N) for scale = η·f(N)·δL/‖δa‖²; N = numel(δa), clipped to ≥1."""
+    if n < 1:
+        n = 1
+    key = normalize_scale_n_mode(mode)
+    fn = float(n)
+    sqrt_n = math.sqrt(fn)
+    if key == "n":
+        return fn
+    if key == "n_half":
+        return fn * 0.5
+    if key == "sqrt_n":
+        return sqrt_n
+    if key == "cube_root_n":
+        return float(fn ** (1.0 / 3.0))
+    if key == "two_sqrt_n":
+        return 2.0 * sqrt_n
+    if key == "half_sqrt_n":
+        return 0.5 * sqrt_n
+    if key == "n_2_3":
+        return float(fn ** (2.0 / 3.0))
+    raise ValueError(key)  # pragma: no cover
 torch.backends.cuda.matmul.allow_tf32 = True
 
 # ---------------------------------------------------------------------------
@@ -170,32 +251,6 @@ DEFAULT_ALPHA      = 1e-4
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_POPULATION = 1
 
-
-def scale_n_factor(mode: str, n: int) -> float:
-    """
-    Multiplier for DANP scale: scale = eta * factor * delta_L / ||δa||²
-    with N = numel(δa). Modes: n→N, n_half→N/2, sqrt_n→√N , cube_root_n→N^{1/3}, two_sqrt_n→2√N, half_sqrt_n→½√N, n_2_3→N^{2/3}.
-    """
-    if n < 1:
-        n = 1
-    m = (mode or "n").strip().lower().replace("-", "_")
-    if m in ("n", "full_n"):
-        return float(n)
-    if m in ("n_half", "half_n", "n_div_2"):
-        return float(n) * 0.5
-    if m in ("sqrt_n", "sqrtn", "sqrt"):
-        return float(math.sqrt(n))
-    if m in ("cube_root_n", "cbrt_n", "n_cbrt", "nthroot_3"):
-        return float(n ** (1.0 / 3.0))
-    if m in ("two_sqrt_n", "2_sqrt_n", "double_sqrt_n", "sqrt_n_times_2"):
-        return 2.0 * float(math.sqrt(n))
-    if m in ("half_sqrt_n", "sqrt_n_half", "one_half_sqrt_n", "0_5_sqrt_n", "sqrt_n_div_2"):
-        return 0.5 * float(math.sqrt(n))
-    if m in ("n_2_3"):
-        return float(n ** (2.0 / 3.0))
-    raise ValueError(
-        f"Unknown --scale_n_mode {mode!r}; use n, n_half, sqrt_n"
-    )
 
 # ===========================================================================
 # Argument parsing
@@ -220,9 +275,10 @@ def parse_args():
     p.add_argument(
         "--scale_n_mode",
         default="n",
-        choices=["n", "n_half", "sqrt_n"],
-        help="Multiplier on scale = η·f(N)·δL/‖δa‖² with N=numel(δa): "
-        "n→N, n_half→N/2, sqrt_n→√N.",
+        type=normalize_scale_n_mode,
+        help="f(N) in scale = η·f(N)·δL/‖δa‖² with N=numel(δa). Canonical: "
+        + ", ".join(sorted(CANONICAL_SCALE_N_MODES))
+        + ". Aliases: cbrt_n, 2_sqrt_n, n_pow_2_3, … (same table as sweep_danp_llm_v4).",
     )
     p.add_argument("--objective",     default="ce", choices=["ce", "reward"])
     p.add_argument("--reward_do_sample", action="store_true")
@@ -524,7 +580,7 @@ def danp_grad_single(
 
     Weight update (outer product uses **clean** decorrelated input):
         W_l ← W_l - η f(N) δL * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
-        with f(N) from ``scale_n_mode`` (n, n_half, sqrt_n).
+        with f(N) from ``scale_n_mode`` (see ``normalize_scale_n_mode`` / ``--scale_n_mode`` help).
     where x*_{l-1} is from the clean forward; ã_l, a_l come from noisy vs clean passes.
 
     Reward sign convention:
