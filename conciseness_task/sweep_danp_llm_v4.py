@@ -12,9 +12,10 @@ Practical knobs (comma-separated lists, no spaces inside numbers):
   ``--scale_n_modes sqrt_n,n`` or ``--scale_n_modes 'sqrt_n, n'``).
 
   --sigmas   --etas   --alphas   --n_populations   --np_includes   --last_ks
-  --scale_n_modes   (n | n_half | sqrt_n for scale = η·f(N)·δL/‖δa‖²; default: n only)
+  --scale_n_modes   f(N) in η·f(N)·δL/‖δa‖²; validated by normalize_scale_n_mode()
+    in this file (aliases e.g. cbrt_n, n_pow_2_3 → canonical names).
 
-  Ablate N scaling: --scale_n_modes n_half,sqrt_n,n,cube_root_n,two_sqrt_n,half_sqrt_n,n_2_3
+  Ablate: --scale_n_modes n_half,sqrt_n,n,cube_root_n,two_sqrt_n,half_sqrt_n,n_2_3
 
   Reward-only generation: --reward_do_samples false,true
     (passed through as danp_llm_v4.py --reward_do_sample when true; default is
@@ -61,6 +62,49 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List
+
+# --- scale_n_mode (keep in sync with danp_llm_v4.py) --------------------------------
+CANONICAL_SCALE_N_MODES = frozenset(
+    {
+        "n",
+        "n_half",
+        "sqrt_n",
+        "cube_root_n",
+        "two_sqrt_n",
+        "half_sqrt_n",
+        "n_2_3",
+    }
+)
+
+
+def normalize_scale_n_mode(mode: str) -> str:
+    """Return canonical --scale_n_mode name or raise ValueError."""
+    m = (mode or "n").strip().lower().replace("-", "_")
+    if m in ("n", "full_n"):
+        return "n"
+    if m in ("n_half", "half_n", "n_div_2"):
+        return "n_half"
+    if m in ("sqrt_n", "sqrtn", "sqrt"):
+        return "sqrt_n"
+    if m in ("cube_root_n", "cbrt_n", "n_cbrt", "nthroot_3"):
+        return "cube_root_n"
+    if m in ("two_sqrt_n", "2_sqrt_n", "double_sqrt_n", "sqrt_n_times_2"):
+        return "two_sqrt_n"
+    if m in (
+        "half_sqrt_n",
+        "sqrt_n_half",
+        "one_half_sqrt_n",
+        "0_5_sqrt_n",
+        "sqrt_n_div_2",
+    ):
+        return "half_sqrt_n"
+    if m in ("n_2_3", "n_pow_2_3", "nthroot_2_3", "n_two_thirds", "two_thirds_n"):
+        return "n_2_3"
+    raise ValueError(
+        "Unknown scale_n_mode; use one of "
+        + ", ".join(sorted(CANONICAL_SCALE_N_MODES))
+        + " (aliases allowed, e.g. 2_sqrt_n → two_sqrt_n)."
+    )
 
 
 def _parse_float_list(s):
@@ -113,9 +157,10 @@ def main():
     p.add_argument(
         "--scale_n_modes",
         default="n",
-        help="Comma-separated: n (×N), n_half (×N/2), sqrt_n (×√N) for "
-        "scale = η·f(N)·δL/‖δa‖² in danp_llm_v4.py. "
-        "Ablate with: n_half,sqrt_n,n",
+        help=        "Comma-separated --scale_n_mode values for danp_llm_v4.py (normalized "
+        "in this script; keep in sync with danp_llm_v4). "
+        f"Canonical: {', '.join(sorted(CANONICAL_SCALE_N_MODES))}. "
+        "Shell: no space after commas unless quoted. Aliases allowed.",
     )
     p.add_argument(
         "--reward_do_samples",
@@ -147,11 +192,16 @@ def main():
     n_pops = _parse_int_list(args.n_populations)
     includes = _parse_str_list(args.np_includes)
     last_ks = _parse_int_list(args.last_ks)
-    scale_modes = _parse_str_list(args.scale_n_modes)
-    allowed_sn = {"n", "n_half", "sqrt_n", "cube_root_n", "two_sqrt_n", "half_sqrt_n", "n_2_3"}
-    for sm in scale_modes:
-        if sm not in allowed_sn:
-            sys.exit(f"Invalid scale_n_mode: {sm!r}; use {sorted(allowed_sn)}")
+    scale_modes = []
+    seen_sn = set()
+    for sm in _parse_str_list(args.scale_n_modes):
+        try:
+            canon = normalize_scale_n_mode(sm)
+        except ValueError as e:
+            sys.exit(f"Invalid scale_n_mode {sm!r}: {e}")
+        if canon not in seen_sn:
+            seen_sn.add(canon)
+            scale_modes.append(canon)
 
     for inc in includes:
         if inc not in {"head", "attn", "mlp", "all"}:
