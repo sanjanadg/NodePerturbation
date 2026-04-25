@@ -166,6 +166,38 @@ def process_seed(seed_args):
     return seed_idx, average_reward
 
 
+def evaluate_wp_with_prints(model, tokenizer, accelerator, epoch_idx=None, max_chars=600):
+    """Evaluate WP dataset and print generated responses."""
+    input_texts = [input_text for input_text, _ in dataset]
+    target_texts = [target_text for _, target_text in dataset]
+    rewards, generated_texts = evaluate_model(
+        model,
+        tokenizer,
+        input_texts,
+        target_texts,
+        accelerator,
+        verbose=False,
+        return_text=True,
+    )
+    header = "WP eval generations"
+    if epoch_idx is not None:
+        header = f"Epoch {epoch_idx + 1} - {header}"
+    print(f"\n========== {header} ==========", flush=True)
+    for i, (prompt, target, generated, reward) in enumerate(
+        zip(input_texts, target_texts, generated_texts, rewards)
+    ):
+        shown = generated if len(generated) <= max_chars else generated[:max_chars] + "..."
+        print(
+            f"  [{i}] prompt: {prompt!r}\n"
+            f"      target: {target!r}\n"
+            f"      generated ({len(generated)} chars): {shown!r}\n"
+            f"      compute_reward: {float(reward):.4f}",
+            flush=True,
+        )
+    print("============================================================\n", flush=True)
+    return float(np.mean(rewards))
+
+
 # --- Main Evolution Strategies Loop ---
 def main():
     accelerator = Accelerator()
@@ -338,6 +370,8 @@ def main():
 
         if accelerator.is_main_process:
             print(f"Iteration {iteration + 1}/{NUM_ITERATIONS}, Time: {iter_time:.2f}s, Mean: {mean_reward:.2f}, Min: {min_reward:.2f}, Max: {max_reward:.2f}")
+            eval_reward = evaluate_wp_with_prints(original_model, tokenizer, accelerator, iteration)
+            print(f"  Eval reward: {eval_reward:.4f}")
             print(f"GPU Memory: {torch.cuda.memory_allocated() / 1024**2:.2f}MB allocated, {torch.cuda.max_memory_allocated() / 1024**2:.2f}MB peak")
 
     total_time = time.time() - training_start_time
