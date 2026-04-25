@@ -27,6 +27,7 @@ parser.add_argument('--aggressive_gc', action='store_true', help='Perform aggres
 parser.add_argument('--eval_interval', type=int, default=20, help='Interval for evaluating best/worst models')
 parser.add_argument('--visualization_dir', type=str, default='./visualizations', help='Directory for saving visualizations')
 parser.add_argument('--weight_sample_interval', type=int, default=10, help='Sample interval for weight tracking')
+parser.add_argument('--print_generation_each_epoch', action='store_true', help='Print sample generations after each epoch')
 args = parser.parse_args()
 
 
@@ -166,6 +167,50 @@ def process_seed(seed_args):
     return seed_idx, average_reward
 
 
+def eval_reward_wp(model, tokenizer, accelerator):
+    """Evaluate mean reward on the fixed WP dataset."""
+    input_texts = [input_text for input_text, _ in dataset]
+    target_texts = [target_text for _, target_text in dataset]
+    rewards = evaluate_model(
+        model,
+        tokenizer,
+        input_texts,
+        target_texts,
+        accelerator,
+        verbose=False,
+        return_text=False,
+    )
+    return float(np.mean(rewards))
+
+
+def print_generations_after_epoch_wp(model, tokenizer, accelerator, epoch_idx, max_chars=600):
+    """Print prompt/target/generated text + reward for each WP example."""
+    input_texts = [input_text for input_text, _ in dataset]
+    target_texts = [target_text for _, target_text in dataset]
+    rewards, generated_texts = evaluate_model(
+        model,
+        tokenizer,
+        input_texts,
+        target_texts,
+        accelerator,
+        verbose=False,
+        return_text=True,
+    )
+    print(f"\n========== Epoch {epoch_idx + 1} — generations (no hooks) ==========", flush=True)
+    for i, (prompt, target, generated, reward) in enumerate(
+        zip(input_texts, target_texts, generated_texts, rewards)
+    ):
+        shown = generated if len(generated) <= max_chars else generated[:max_chars] + "..."
+        print(
+            f"  [{i}] prompt: {prompt!r}\n"
+            f"      target: {target!r}\n"
+            f"      generated ({len(generated)} chars): {shown!r}\n"
+            f"      compute_reward: {float(reward):.4f}",
+            flush=True,
+        )
+    print("============================================================\n", flush=True)
+
+
 # --- Main Evolution Strategies Loop ---
 def main():
     accelerator = Accelerator()
@@ -210,6 +255,12 @@ def main():
     training_start_time = time.time()
 
     np.random.seed(initial_seed)
+    eval_reward_history = []
+
+    original_model = model_list[0]
+    baseline = eval_reward_wp(original_model, tokenizer, accelerator)
+    if accelerator.is_main_process:
+        print(f"[BASELINE] Eval mean reward: {baseline:.4f}")
 
     for iteration in range(NUM_ITERATIONS):
         # Record iteration start time
