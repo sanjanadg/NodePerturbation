@@ -389,6 +389,16 @@ def main():
 
         if accelerator.is_main_process:
             print(f"Iteration {iteration + 1}/{NUM_ITERATIONS}, Time: {iter_time:.2f}s, Mean: {mean_reward:.2f}, Min: {min_reward:.2f}, Max: {max_reward:.2f}")
+            eval_r = eval_reward_wp(original_model, tokenizer, accelerator)
+            eval_reward_history.append(eval_r)
+            print(f"  Eval reward: {eval_r:.4f}")
+            if args.print_generation_each_epoch:
+                print_generations_after_epoch_wp(
+                    original_model,
+                    tokenizer,
+                    accelerator,
+                    iteration,
+                )
             print(f"GPU Memory: {torch.cuda.memory_allocated() / 1024**2:.2f}MB allocated, {torch.cuda.max_memory_allocated() / 1024**2:.2f}MB peak")
 
     total_time = time.time() - training_start_time
@@ -396,6 +406,11 @@ def main():
 
     # Save the fine-tuned model weights.
     if accelerator.is_main_process:
+        print(
+            "Eval reward history (mean per epoch, "
+            f"n={len(eval_reward_history)}): "
+            f"{[round(float(x), 6) for x in eval_reward_history]}"
+        )
         print(f"Training completed in {total_time:.2f}s ({total_time/60:.2f} minutes)")
         question_num = len(dataset)
         save_dir = f"{model_name}_es_random_seed{initial_seed}_pop{POPULATION_SIZE}_iter{NUM_ITERATIONS}_sigma{SIGMA}_alpha{ALPHA}_{args.precision}_threads{args.gpu_threads}_question_num{question_num}_correct"
