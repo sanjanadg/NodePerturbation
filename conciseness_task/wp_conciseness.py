@@ -27,7 +27,6 @@ parser.add_argument('--aggressive_gc', action='store_true', help='Perform aggres
 parser.add_argument('--eval_interval', type=int, default=20, help='Interval for evaluating best/worst models')
 parser.add_argument('--visualization_dir', type=str, default='./visualizations', help='Directory for saving visualizations')
 parser.add_argument('--weight_sample_interval', type=int, default=10, help='Sample interval for weight tracking')
-parser.add_argument('--print_generation_each_epoch', action='store_true', help='Print sample generations after each epoch')
 args = parser.parse_args()
 
 
@@ -167,50 +166,6 @@ def process_seed(seed_args):
     return seed_idx, average_reward
 
 
-def eval_reward_wp(model, tokenizer, accelerator):
-    """Evaluate mean reward on the fixed WP dataset."""
-    input_texts = [input_text for input_text, _ in dataset]
-    target_texts = [target_text for _, target_text in dataset]
-    rewards = evaluate_model(
-        model,
-        tokenizer,
-        input_texts,
-        target_texts,
-        accelerator,
-        verbose=False,
-        return_text=False,
-    )
-    return float(np.mean(rewards))
-
-
-def print_generations_after_epoch_wp(model, tokenizer, accelerator, epoch_idx, max_chars=600):
-    """Print prompt/target/generated text + reward for each WP example."""
-    input_texts = [input_text for input_text, _ in dataset]
-    target_texts = [target_text for _, target_text in dataset]
-    rewards, generated_texts = evaluate_model(
-        model,
-        tokenizer,
-        input_texts,
-        target_texts,
-        accelerator,
-        verbose=False,
-        return_text=True,
-    )
-    print(f"\n========== Epoch {epoch_idx + 1} — generations (no hooks) ==========", flush=True)
-    for i, (prompt, target, generated, reward) in enumerate(
-        zip(input_texts, target_texts, generated_texts, rewards)
-    ):
-        shown = generated if len(generated) <= max_chars else generated[:max_chars] + "..."
-        print(
-            f"  [{i}] prompt: {prompt!r}\n"
-            f"      target: {target!r}\n"
-            f"      generated ({len(generated)} chars): {shown!r}\n"
-            f"      compute_reward: {float(reward):.4f}",
-            flush=True,
-        )
-    print("============================================================\n", flush=True)
-
-
 # --- Main Evolution Strategies Loop ---
 def main():
     accelerator = Accelerator()
@@ -255,12 +210,6 @@ def main():
     training_start_time = time.time()
 
     np.random.seed(initial_seed)
-    eval_reward_history = []
-
-    original_model = model_list[0]
-    baseline = eval_reward_wp(original_model, tokenizer, accelerator)
-    if accelerator.is_main_process:
-        print(f"[BASELINE] Eval mean reward: {baseline:.4f}")
 
     for iteration in range(NUM_ITERATIONS):
         # Record iteration start time
@@ -389,16 +338,6 @@ def main():
 
         if accelerator.is_main_process:
             print(f"Iteration {iteration + 1}/{NUM_ITERATIONS}, Time: {iter_time:.2f}s, Mean: {mean_reward:.2f}, Min: {min_reward:.2f}, Max: {max_reward:.2f}")
-            eval_r = eval_reward_wp(original_model, tokenizer, accelerator)
-            eval_reward_history.append(eval_r)
-            print(f"  Eval reward: {eval_r:.4f}")
-            if args.print_generation_each_epoch:
-                print_generations_after_epoch_wp(
-                    original_model,
-                    tokenizer,
-                    accelerator,
-                    iteration,
-                )
             print(f"GPU Memory: {torch.cuda.memory_allocated() / 1024**2:.2f}MB allocated, {torch.cuda.max_memory_allocated() / 1024**2:.2f}MB peak")
 
     total_time = time.time() - training_start_time
@@ -406,11 +345,6 @@ def main():
 
     # Save the fine-tuned model weights.
     if accelerator.is_main_process:
-        print(
-            "Eval reward history (mean per epoch, "
-            f"n={len(eval_reward_history)}): "
-            f"{[round(float(x), 6) for x in eval_reward_history]}"
-        )
         print(f"Training completed in {total_time:.2f}s ({total_time/60:.2f} minutes)")
         question_num = len(dataset)
         save_dir = f"{model_name}_es_random_seed{initial_seed}_pop{POPULATION_SIZE}_iter{NUM_ITERATIONS}_sigma{SIGMA}_alpha{ALPHA}_{args.precision}_threads{args.gpu_threads}_question_num{question_num}_correct"
