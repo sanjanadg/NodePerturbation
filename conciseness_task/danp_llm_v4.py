@@ -776,6 +776,15 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             accumulated_dec[name] += dR
 
     B = len(batch)
+    # WP-style population count: N candidates, each scored on all prompts in this
+    # batch (mean R_noisy across examples for fixed pop index j). Raw order was
+    # [ex0 pop0..popN-1, ex1 pop0..popN-1, ...].
+    if objective == "reward" and batch_pop_noisy_rewards and B > 0:
+        expected = B * n_population
+        if len(batch_pop_noisy_rewards) == expected:
+            arr = np.asarray(batch_pop_noisy_rewards, dtype=np.float64).reshape(B, n_population)
+            batch_pop_noisy_rewards = [float(arr[:, j].mean()) for j in range(n_population)]
+
     with torch.no_grad():
         for key, acc in accumulated.items():
             avg = acc / B
@@ -1017,8 +1026,9 @@ def main():
             min_reward = float(np.min(epoch_pop_noisy_rewards))
             max_reward = float(np.max(epoch_pop_noisy_rewards))
             print(
-                f"[Epoch {epoch+1}] pop_noisy_reward (N={args.n_population} per example, "
-                f"n={len(epoch_pop_noisy_rewards)} draws): "
+                f"[Epoch {epoch+1}] pop_noisy_reward (N={args.n_population} candidates; "
+                f"each = mean R_noisy over train batch prompts, WP-style; "
+                f"n={len(epoch_pop_noisy_rewards)}): "
                 f"mean={mean_reward:.4f}, min={min_reward:.4f}, max={max_reward:.4f}",
                 flush=True,
             )
