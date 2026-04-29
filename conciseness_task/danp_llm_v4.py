@@ -854,6 +854,39 @@ def log_reward_generation_sample(model, tokenizer, batch, device,
     )
 
 
+def maybe_print_explosion(
+    metric_name: str,
+    value: float,
+    prev_value: float | None = None,
+    abs_threshold: float = 1e6,
+    ratio_threshold: float = 50.0,
+) -> None:
+    """Print a warning when a metric appears to explode."""
+    v = float(value)
+    if not np.isfinite(v):
+        print(f"[EXPLOSION] {metric_name} became non-finite: {v}", flush=True)
+        return
+    if abs(v) >= abs_threshold:
+        print(
+            f"[EXPLOSION] {metric_name} magnitude is huge: {v:.4e} "
+            f"(threshold={abs_threshold:.1e})",
+            flush=True,
+        )
+        return
+    if prev_value is None:
+        return
+    pv = float(prev_value)
+    if not np.isfinite(pv):
+        return
+    ratio = abs(v) / max(abs(pv), 1e-12)
+    if ratio >= ratio_threshold and abs(v) >= 1e-8:
+        print(
+            f"[EXPLOSION] {metric_name} jumped sharply: prev={pv:.4e}, "
+            f"now={v:.4e}, x{ratio:.1f}",
+            flush=True,
+        )
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -915,6 +948,7 @@ def main():
         indices  = np.arange(len(train_data))
         epoch_dL = []
         epoch_scale, epoch_upd_norm = [], []
+        epoch_reward = []
 
         pbar = tqdm(range(0, len(train_data), args.batch_size),
                     desc=f"Epoch {epoch+1}/{args.epochs}")
@@ -938,6 +972,9 @@ def main():
             epoch_dL.append(dL)
             epoch_scale.append(sc_b)
             epoch_upd_norm.append(up_b)
+            if args.objective == "reward":
+                # For reward objective, danp_batch_step returns mean clean loss L=-reward.
+                epoch_reward.append(-float(_L))
             pbar.set_postfix({"scale": f"{sc_b:.4e}", "||upd||": f"{up_b:.4e}"})
 
             if log_reward:
@@ -956,6 +993,7 @@ def main():
         mean_dL = float(np.mean(epoch_dL))
         mean_scale_ep = float(np.mean(epoch_scale))
         mean_upd_ep   = float(np.mean(epoch_upd_norm))
+        prev_mean_scale = train_scale_history[-1] if train_scale_history else None
         train_scale_history.append(mean_scale_ep)
 
         # train_scale_history: mean η·δL/‖δa‖² per epoch (danp_grad_single scale, batch-averaged).
@@ -963,6 +1001,18 @@ def main():
             f"[Epoch {epoch+1}] train_scale (mean η·δL/‖δa‖²): {mean_scale_ep:.4e} | "
             f"mean ||update||_F: {mean_upd_ep:.4e} | mean δL: {mean_dL:.4e}"
         )
+        maybe_print_explosion("train_scale", mean_scale_ep, prev_mean_scale)
+        maybe_print_explosion("mean_update_norm", mean_upd_ep)
+        maybe_print_explosion("mean_delta_L", mean_dL)
+        if args.objective == "reward" and epoch_reward:
+            mean_reward = float(np.mean(epoch_reward))
+            min_reward = float(np.min(epoch_reward))
+            max_reward = float(np.max(epoch_reward))
+            print(
+                f"[Epoch {epoch+1}] mean_reward: {mean_reward:.4f}, "
+                f"min_reward: {min_reward:.4f}, max_reward: {max_reward:.4f}",
+                flush=True,
+            )
 
         if args.objective == "reward":
             hook.detach()
@@ -970,8 +1020,10 @@ def main():
                 model, tok, train_data, device,
                 args.max_new_tokens, args.reward_do_sample, reward_continuation_only,
             )
+            prev_train_r = train_reward_history[-1] if train_reward_history else None
             train_reward_history.append(float(mean_train_r))
             print(f"[Epoch {epoch+1}] mean train reward: {mean_train_r:.4f}", flush=True)
+            maybe_print_explosion("mean_train_reward", mean_train_r, prev_train_r)
 
         if args.print_generation_each_epoch:
             print_generations_after_epoch(
@@ -988,9 +1040,11 @@ def main():
                 ev  = eval_reward(model, tok, eval_data, device,
                                   args.max_new_tokens, args.reward_do_sample,
                                   reward_continuation_only)
+            prev_ev = eval_metric_history[-1] if eval_metric_history else None
             eval_metric_history.append(ev)
             tag = "CE" if args.objective == "ce" else "reward"
             print(f"  Eval {tag}: {ev:.4f}")
+            maybe_print_explosion(f"eval_{tag.lower()}", ev, prev_ev)
             if device.type == "cuda":
                 print(f"  GPU: {torch.cuda.memory_allocated()/1024**2:.1f}MB alloc, "
                       f"{torch.cuda.max_memory_allocated()/1024**2:.1f}MB peak")
