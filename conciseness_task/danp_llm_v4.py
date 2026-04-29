@@ -261,7 +261,13 @@ def parse_args():
     p.add_argument("--hf_cache_dir",  default="huggingface_cache")
     p.add_argument("--output_dir",    default="./out_danp_v4")
     p.add_argument("--epochs",        type=int,   default=5)
-    p.add_argument("--batch_size",    type=int,   default=2)
+    p.add_argument(
+        "--batch_size",
+        type=int,
+        default=2,
+        help="Chunk size for CE eval only (eval_ce). Training always uses one batch "
+        "per epoch = full train_data (WP-style: all prompts in one danp_batch_step).",
+    )
     p.add_argument("--max_length",    type=int,   default=512)
     p.add_argument("--max_new_tokens",type=int,   default=DEFAULT_MAX_NEW_TOKENS)
     p.add_argument("--eta",           type=float, default=DEFAULT_ETA)
@@ -591,8 +597,7 @@ def danp_grad_single(
         If noise HURT    (R_noisy < R_clean): delta_L > 0 → scale > 0 → W -= positive → W moves away from noise direction ✓
     """
     prompt, target = example
-    r_clean_reward = None
-    r_noisy_rewards = []
+    pop_noisy_rewards: list[float] = []
 
     # ------------------------------------------------------------------ #
     # 1. Clean forward pass                                                #
@@ -641,6 +646,7 @@ def danp_grad_single(
                     model, tokenizer, prompt, target, device,
                     max_new_tokens, reward_do_sample, reward_continuation_only,
                 )
+                pop_noisy_rewards.append(float(R_noisy))
                 L_noisy = -float(R_noisy)
         captured_noisy = {k: {kk: v.clone() for kk, v in vv.items()}
                           for k, vv in hook._captured_noisy.items()}
@@ -721,6 +727,7 @@ def danp_grad_single(
         float(delta_L_mean),
         scale_mean,
         update_norm,
+        pop_noisy_rewards,
     )
 
 
@@ -737,11 +744,12 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
     total_scale, total_updn = 0.0, 0.0
     accumulated             = {}
     accumulated_dec         = {}
+    batch_pop_noisy_rewards: list[float] = []
 
     for i, example in enumerate(batch):
         example_seed = base_seed + i * 997
 
-        updates, dec_updates, L_clean, dL, sc_m, up_n = danp_grad_single(
+        updates, dec_updates, L_clean, dL, sc_m, up_n, pop_rw = danp_grad_single(
             model, tokenizer, example, device, hook,
             eta=eta, max_length=max_length, objective=objective,
             max_new_tokens=max_new_tokens, reward_do_sample=reward_do_sample,
@@ -755,6 +763,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
         total_dL    += dL
         total_scale += sc_m
         total_updn  += up_n
+        batch_pop_noisy_rewards.extend(pop_rw)
 
         for key, upd in updates.items():
             if key not in accumulated:
@@ -779,7 +788,7 @@ def danp_batch_step(model, tokenizer, batch, device, hook,
             hook.R[name].sub_(avg.to(device=hook.R[name].device,
                                       dtype=hook.R[name].dtype))
 
-    return total_L / B, total_dL / B, total_scale / B, total_updn / B
+    return total_L / B, total_dL / B, total_scale / B, total_updn / B, batch_pop_noisy_rewards
 
 
 # ===========================================================================
@@ -945,19 +954,19 @@ def main():
 
     for epoch in range(args.epochs):
         model.eval()
-        indices  = np.arange(len(train_data))
         epoch_dL = []
         epoch_scale, epoch_upd_norm = [], []
-        epoch_reward = []
+        epoch_pop_noisy_rewards: list[float] = []
 
-        pbar = tqdm(range(0, len(train_data), args.batch_size),
-                    desc=f"Epoch {epoch+1}/{args.epochs}")
-        for step, start in enumerate(pbar):
-            batch_idx  = indices[start:start + args.batch_size]
-            batch      = [train_data[i] for i in batch_idx]
-            base_seed  = args.seed + epoch * 100_000 + step * 1000
+        # One update per epoch over the full train set (same grouping as WP:
+        # all prompts scored/used in a single forward pass batch per outer step).
+        batch = list(train_data)
+        base_seed = args.seed + epoch * 100_000
+        step = 0
 
-            _L, dL, sc_b, up_b = danp_batch_step(
+        pbar = tqdm(range(1), desc=f"Epoch {epoch+1}/{args.epochs}")
+        for _ in pbar:
+            _L, dL, sc_b, up_b, pop_rw = danp_batch_step(
                 model, tok, batch, device, hook,
                 eta=args.eta, max_length=args.max_length,
                 objective=args.objective,
@@ -966,15 +975,14 @@ def main():
                 reward_continuation_only=reward_continuation_only,
                 n_population=args.n_population,
                 alpha=args.alpha, base_seed=base_seed,
-                verbose=(args.verbose and step == 0 and epoch == 0),
+                verbose=(args.verbose and epoch == 0),
                 scale_n_mode=args.scale_n_mode,
             )
             epoch_dL.append(dL)
             epoch_scale.append(sc_b)
             epoch_upd_norm.append(up_b)
-            if args.objective == "reward":
-                # For reward objective, danp_batch_step returns mean clean loss L=-reward.
-                epoch_reward.append(-float(_L))
+            if args.objective == "reward" and pop_rw:
+                epoch_pop_noisy_rewards.extend(pop_rw)
             pbar.set_postfix({"scale": f"{sc_b:.4e}", "||upd||": f"{up_b:.4e}"})
 
             if log_reward:
@@ -1004,13 +1012,14 @@ def main():
         maybe_print_explosion("train_scale", mean_scale_ep, prev_mean_scale)
         maybe_print_explosion("mean_update_norm", mean_upd_ep)
         maybe_print_explosion("mean_delta_L", mean_dL)
-        if args.objective == "reward" and epoch_reward:
-            mean_reward = float(np.mean(epoch_reward))
-            min_reward = float(np.min(epoch_reward))
-            max_reward = float(np.max(epoch_reward))
+        if args.objective == "reward" and epoch_pop_noisy_rewards:
+            mean_reward = float(np.mean(epoch_pop_noisy_rewards))
+            min_reward = float(np.min(epoch_pop_noisy_rewards))
+            max_reward = float(np.max(epoch_pop_noisy_rewards))
             print(
-                f"[Epoch {epoch+1}] mean_reward: {mean_reward:.4f}, "
-                f"min_reward: {min_reward:.4f}, max_reward: {max_reward:.4f}",
+                f"[Epoch {epoch+1}] pop_noisy_reward (N={args.n_population} per example, "
+                f"n={len(epoch_pop_noisy_rewards)} draws): "
+                f"mean={mean_reward:.4f}, min={min_reward:.4f}, max={max_reward:.4f}",
                 flush=True,
             )
 
