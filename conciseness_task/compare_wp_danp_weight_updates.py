@@ -12,15 +12,15 @@ Default hyperparameters (override via CLI):
   DANP: eta=0.001, sigma=0.001, alpha=0.0001, pop=30, epochs=100
 
 USAGE (from repo root):
-  python conciseness_task/compare_wp_danp_weight_updates.py
-  python conciseness_task/compare_wp_danp_weight_updates.py --model_name Qwen/Qwen2.5-0.5B-Instruct --no_save_plots
+  python3 conciseness_task/compare_wp_danp_weight_updates.py
+  python3 conciseness_task/compare_wp_danp_weight_updates.py --model_name Qwen/Qwen2.5-0.5B-Instruct --no_save_plots
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
+import gc
 import json
 import os
 import sys
@@ -42,10 +42,12 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from danp_llm_v4 import (  # noqa: E402
+    CANONICAL_SCALE_N_MODES,
     DANPHook,
     WP_DUMMY_EXAMPLES,
     compute_reward,
     danp_grad_single,
+    normalize_scale_n_mode,
 )
 
 # Match wp_conciseness.py
@@ -88,10 +90,49 @@ def parse_args():
     p.add_argument("--danp_population", type=int, default=30)
     p.add_argument("--danp_np_include", default="all", choices=["head", "attn", "mlp", "all"])
     p.add_argument("--danp_last_k", type=int, default=0)
-    p.add_argument("--danp_scale_n_mode", default="n")
+    p.add_argument(
+        "--danp_scale_n_mode",
+        default="sqrt_n",
+        choices=sorted(CANONICAL_SCALE_N_MODES),
+        type=normalize_scale_n_mode,
+        help=(
+            "DANP f(N) in scale = eta·f(N)·delta_L/||delta_a||^2. "
+            "Choices: n (N), n_half (N/2), sqrt_n (sqrt(N)), "
+            "cube_root_n (N^(1/3)), two_sqrt_n (2*sqrt(N)), "
+            "half_sqrt_n (sqrt(N)/2), n_2_3 (N^(2/3))."
+        ),
+    )
     p.add_argument("--max_length", type=int, default=512)
+    p.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cuda", "mps", "cpu"],
+        help="Device for model and tensors (default: cuda > mps > cpu).",
+    )
     p.add_argument("--no_save_plots", action="store_true")
     return p.parse_args()
+
+
+def resolve_device(request: str) -> torch.device:
+    if request != "auto":
+        dev = torch.device(request)
+        if request == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("--device cuda requested but CUDA is not available")
+        if request == "mps" and not torch.backends.mps.is_available():
+            raise RuntimeError("--device mps requested but MPS is not available")
+        return dev
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def clone_model_from_state(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
+    """Second trajectory copy without copy.deepcopy (much lower peak RAM)."""
+    clone = AutoModelForCausalLM.from_config(model.config)
+    clone.load_state_dict(model.state_dict(), assign=True)
+    return clone.to(device=device, dtype=next(model.parameters()).dtype).eval()
 
 
 def _linear_weight_keys(hook: DANPHook) -> list[str]:
@@ -314,11 +355,19 @@ def apply_danp_updates(
 def run_experiment(args) -> list[IterMetrics]:
     dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
     dtype = dtype_map[args.precision]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     dataset = list(WP_DUMMY_EXAMPLES)
 
-    print(f"Loading {args.model_name} on {device} ...")
-    base = AutoModelForCausalLM.from_pretrained(
+    print(f"Loading {args.model_name} on {device} ...", flush=True)
+    if device.type == "cpu":
+        print(
+            "  Note: running on CPU — this script keeps two model copies in RAM and "
+            "runs many forward passes per iteration. Use --device cuda or --device mps "
+            "if available; reduce --iterations / population on low-memory machines.",
+            flush=True,
+        )
+
+    wp_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         cache_dir=args.hf_cache_dir,
         torch_dtype=dtype,
@@ -329,9 +378,12 @@ def run_experiment(args) -> list[IterMetrics]:
         tok.pad_token_id = tok.eos_token_id
     tok.padding_side = "left"
 
-    wp_model = base.to(device).eval()
-    danp_model = copy.deepcopy(wp_model)
-    danp_model.eval()
+    wp_model = wp_model.to(device).eval()
+    print("  Cloning model for DANP trajectory (state_dict copy, not deepcopy) ...", flush=True)
+    danp_model = clone_model_from_state(wp_model, device)
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     hook_wp = DANPHook(
         wp_model, args.danp_np_include, args.danp_last_k,
