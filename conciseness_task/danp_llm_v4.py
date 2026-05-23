@@ -249,7 +249,7 @@ DEFAULT_ETA        = 1e-3
 DEFAULT_SIGMA      = 1e-3
 DEFAULT_ALPHA      = 1e-4
 DEFAULT_MAX_NEW_TOKENS = 100
-DEFAULT_POPULATION = 1
+DEFAULT_POPULATION = 30
 
 
 # ===========================================================================
