@@ -501,12 +501,15 @@ class DANPHook:
 # Decorrelation  (unchanged from v1)
 # ===========================================================================
 def decorrelation_delta_r(x_star, R, alpha):
-    x   = x_star.float().reshape(-1, x_star.shape[-1])
-    n, d = x.shape
-    Rf  = R.float()
+    if alpha == 0:
+        return torch.zeros_like(R)
+    # d×d matmul on GPU is expensive for wide layers; compute on CPU, return to x device.
+    x = x_star.float().reshape(-1, x_star.shape[-1]).cpu()
+    n, _d = x.shape
+    Rf = R.float().cpu()
     cov = (x.T @ x) / n if n > 1 else x.T @ x
     diag = torch.diag((x ** 2).mean(dim=0))
-    return alpha * (cov - diag) @ Rf
+    return (alpha * ((cov - diag) @ Rf)).to(device=x_star.device, dtype=torch.float32)
 
 
 # ===========================================================================
@@ -706,13 +709,14 @@ def danp_grad_single(
 
     # Decorrelation update (from clean x_star, matching toy danp.py)
     decorrelation_updates = {}
-    for name in captured_clean:
-        x_star = captured_clean[name]["x_star"]
-        if x_star.dim() > 2:
-            x_star = x_star.reshape(-1, x_star.shape[-1])
-        decorrelation_updates[name] = decorrelation_delta_r(
-            x_star, hook.R[name], alpha
-        )
+    if alpha > 0:
+        for name in captured_clean:
+            x_star = captured_clean[name]["x_star"]
+            if x_star.dim() > 2:
+                x_star = x_star.reshape(-1, x_star.shape[-1])
+            decorrelation_updates[name] = decorrelation_delta_r(
+                x_star, hook.R[name], alpha
+            )
 
     scale_mean = float(np.mean(scale_values))
     upd_frob_sq = sum(

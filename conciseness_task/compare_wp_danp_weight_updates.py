@@ -19,6 +19,7 @@ USAGE (from repo root):
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import gc
 import json
@@ -282,8 +283,10 @@ def compute_danp_batch_updates(
     base_seed: int,
     scale_n_mode: str,
     max_new_tokens: int,
+    decorrelation_alpha: float | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], float, float, list[float]]:
     """Accumulate DANP weight/R deltas (pre-apply) averaged over batch; same keys as danp_batch_step."""
+    dec_alpha = alpha if decorrelation_alpha is None else decorrelation_alpha
     accumulated: dict[str, torch.Tensor] = {}
     accumulated_dec: dict[str, torch.Tensor] = {}
     total_dL = 0.0
@@ -305,7 +308,7 @@ def compute_danp_batch_updates(
             reward_do_sample=DO_SAMPLE,
             reward_continuation_only=True,
             n_population=n_population,
-            alpha=alpha,
+            alpha=dec_alpha,
             base_seed=example_seed,
             verbose=False,
             scale_n_mode=scale_n_mode,
@@ -395,7 +398,8 @@ def run_experiment(args) -> list[IterMetrics]:
     )
     for h in (hook_wp, hook_danp):
         for name in h.R:
-            h.R[name] = h.R[name].to(device)
+            # Keep R on CPU; decorrelation_delta_r computes there (saves GPU VRAM).
+            h.R[name] = h.R[name].cpu()
 
     linear_keys = _linear_weight_keys(hook_wp)
     print(f"Linear target layers: {len(linear_keys)}")
@@ -425,6 +429,8 @@ def run_experiment(args) -> list[IterMetrics]:
         wp_updates = compute_wp_updates(
             wp_model, seeds, r_norm, args.wp_alpha, args.wp_sigma,
         )
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
         # --- DANP on danp_model trajectory ---
         danp_updates, danp_dec, dL_mean, scale_mean, danp_pop_rewards = compute_danp_batch_updates(
@@ -441,7 +447,7 @@ def run_experiment(args) -> list[IterMetrics]:
             max_new_tokens=MAX_NEW_TOKENS,
         )
 
-        # --- DANP update computed on wp_model weights (same W_t as WP step) ---
+        # --- DANP update on current WP weights (weight-only; no R update on WP path) ---
         danp_at_wp, _danp_dec_at_wp, _, _, _ = compute_danp_batch_updates(
             wp_model,
             tok,
@@ -451,6 +457,7 @@ def run_experiment(args) -> list[IterMetrics]:
             eta=args.danp_eta,
             n_population=args.danp_population,
             alpha=args.danp_alpha,
+            decorrelation_alpha=0.0,
             base_seed=danp_base_seed,
             scale_n_mode=args.danp_scale_n_mode,
             max_new_tokens=MAX_NEW_TOKENS,
