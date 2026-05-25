@@ -513,6 +513,28 @@ class DANPHook:
                 pass  # handled by detach+attach cycle in danp_grad_single
 
 
+def _align_danp_layer_activations(
+    a_clean: torch.Tensor,
+    a_noisy: torch.Tensor,
+    x_star: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    """
+    Flatten to (N, d) and align row counts for grad = delta_a.T @ x_star.
+
+    With ``objective=reward``, clean and noisy ``generate()`` can differ in
+    decoded length, so hook captures may have mismatched sequence lengths.
+    """
+    x = x_star.reshape(-1, x_star.shape[-1])
+    ac = a_clean.reshape(-1, a_clean.shape[-1])
+    an = a_noisy.reshape(-1, a_noisy.shape[-1])
+    n = min(x.shape[0], ac.shape[0], an.shape[0])
+    if n < 1:
+        return None
+    if x.shape[0] != n or ac.shape[0] != n or an.shape[0] != n:
+        x, ac, an = x[:n], ac[:n], an[:n]
+    return x, ac, an
+
+
 # ===========================================================================
 # Decorrelation  (unchanged from v1)
 # ===========================================================================
@@ -679,11 +701,16 @@ def danp_grad_single(
         for name, _ in hook._targets:
             a_c = captured_clean[name]["a_clean"]
             a_n = captured_noisy[name]["a_noisy"]
-            delta_a_parts.append((a_n - a_c).flatten())
+            x_s = captured_clean[name]["x_star"]
+            aligned = _align_danp_layer_activations(a_c, a_n, x_s)
+            if aligned is None:
+                continue
+            _x, ac, an = aligned
+            delta_a_parts.append((an - ac).flatten())
 
-        delta_a_cat = torch.cat(delta_a_parts)
-        norm_sq     = float((delta_a_cat ** 2).sum().item())
-        N           = delta_a_cat.numel()
+        delta_a_cat = torch.cat(delta_a_parts) if delta_a_parts else torch.tensor([])
+        norm_sq     = float((delta_a_cat ** 2).sum().item()) if delta_a_cat.numel() else 1.0
+        N           = max(delta_a_cat.numel(), 1)
         scale       = eta * scale_n_factor(scale_n_mode, N) * float(delta_L) / norm_sq
         scale_values.append(scale)
 
@@ -698,12 +725,12 @@ def danp_grad_single(
         for name, mod in hook._targets:
             a_c     = captured_clean[name]["a_clean"]
             a_n     = captured_noisy[name]["a_noisy"]
-            delta_a = (a_n - a_c)
             x_star  = captured_clean[name]["x_star"]
-
-            if x_star.dim() > 2:
-                x_star  = x_star.reshape(-1, x_star.shape[-1])
-                delta_a = delta_a.reshape(-1, delta_a.shape[-1])
+            aligned = _align_danp_layer_activations(a_c, a_n, x_star)
+            if aligned is None:
+                continue
+            x_star, a_c, a_n = aligned
+            delta_a = a_n - a_c
 
             grad   = delta_a.T @ x_star
             update = scale * grad.float()
@@ -870,10 +897,15 @@ def danp_grad_single_normalized_delta_l(
         for name, _ in hook._targets:
             a_c = captured_clean[name]["a_clean"]
             a_n = captured_noisy[name]["a_noisy"]
-            delta_a_parts.append((a_n - a_c).flatten())
-        delta_a_cat = torch.cat(delta_a_parts)
-        norm_sq = float((delta_a_cat ** 2).sum().item())
-        N = delta_a_cat.numel()
+            x_s = captured_clean[name]["x_star"]
+            aligned = _align_danp_layer_activations(a_c, a_n, x_s)
+            if aligned is None:
+                continue
+            _x, ac, an = aligned
+            delta_a_parts.append((an - ac).flatten())
+        delta_a_cat = torch.cat(delta_a_parts) if delta_a_parts else torch.tensor([])
+        norm_sq = float((delta_a_cat ** 2).sum().item()) if delta_a_cat.numel() else 1.0
+        N = max(delta_a_cat.numel(), 1)
 
         pop_records.append(
             {
@@ -909,11 +941,12 @@ def danp_grad_single_normalized_delta_l(
         for name, mod in hook._targets:
             a_c = captured_clean[name]["a_clean"]
             a_n = captured_noisy[name]["a_noisy"]
-            delta_a = a_n - a_c
             x_star = captured_clean[name]["x_star"]
-            if x_star.dim() > 2:
-                x_star = x_star.reshape(-1, x_star.shape[-1])
-                delta_a = delta_a.reshape(-1, delta_a.shape[-1])
+            aligned = _align_danp_layer_activations(a_c, a_n, x_star)
+            if aligned is None:
+                continue
+            x_star, a_c, a_n = aligned
+            delta_a = a_n - a_c
             grad = delta_a.T @ x_star
             update = scale * grad.float()
             key = name + ".weight"
