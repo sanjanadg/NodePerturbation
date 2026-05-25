@@ -311,6 +311,17 @@ def parse_args():
         default="",
         help="If set, write baseline, eval_metric_history, train_scale_history, train_reward_history, args.",
     )
+    p.add_argument(
+        "--normalize_delta_l",
+        action="store_true",
+        help="Use danp_batch_step_normalized_delta_l (WP-style z-score of δL over population).",
+    )
+    p.add_argument(
+        "--delta_l_norm_eps",
+        type=float,
+        default=1e-8,
+        help="Epsilon in std denominator for --normalize_delta_l (default 1e-8, matches WP).",
+    )
     return p.parse_args()
 
 
@@ -735,6 +746,302 @@ def danp_grad_single(
     )
 
 
+def normalize_delta_l_population(
+    delta_L_list: list[float],
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """
+    WP-style z-score of loss deltas across one population (mean 0, std ~1).
+
+    Matches wp_conciseness reward normalization: (x - mean) / (std + eps).
+    Used by ``danp_grad_single_normalized_delta_l`` only; canonical DANP uses raw δL.
+    """
+    arr = np.asarray(delta_L_list, dtype=np.float64)
+    return (arr - arr.mean()) / (arr.std() + eps)
+
+
+def danp_grad_single_normalized_delta_l(
+    model,
+    tokenizer,
+    example,
+    device,
+    hook,
+    eta,
+    max_length,
+    objective,
+    max_new_tokens,
+    reward_do_sample,
+    reward_continuation_only,
+    n_population,
+    alpha,
+    base_seed,
+    verbose=False,
+    scale_n_mode: str = "n",
+    delta_l_eps: float = 1e-8,
+):
+    """
+    DANP gradient estimate with **population-normalized δL** (fitness-shaped variant).
+
+    Same outer-product structure as ``danp_grad_single``:
+        W_l ← W_l - η f(N) δL̃ * (ã_l - a_l) (x*_{l-1})^T / ||δa||²
+    but δL̃_i = (δL_i - mean(δL)) / (std(δL) + eps) over the population, analogous to
+    WP's normalized rewards. Directions come from activations; step **weighting** across
+    population members is stabilized.
+
+    Returns the same 7-tuple as ``danp_grad_single``. ``delta_L_mean`` is the mean of
+    raw δL; scales use normalized δL̃.
+    """
+    prompt, target = example
+    pop_noisy_rewards: list[float] = []
+
+    hook.base_seed = base_seed
+    hook.attach("clean")
+    with torch.no_grad():
+        if objective == "ce":
+            ids, mask, labs = prepare_batch([example], tokenizer, device, max_length)
+            out = model(input_ids=ids, attention_mask=mask)
+            L_clean = F.cross_entropy(
+                out.logits.view(-1, model.config.vocab_size),
+                labs.view(-1),
+                ignore_index=-100,
+            ).item()
+        else:
+            R_clean, _, _ = generate_reward(
+                model,
+                tokenizer,
+                prompt,
+                target,
+                device,
+                max_new_tokens,
+                reward_do_sample,
+                reward_continuation_only,
+            )
+            L_clean = -float(R_clean)
+    captured_clean = {
+        k: {kk: v.clone() for kk, v in vv.items()}
+        for k, vv in hook._captured_clean.items()
+    }
+    hook.detach()
+
+    pop_records: list[dict] = []
+    raw_delta_L: list[float] = []
+
+    for pop_i in range(n_population):
+        pop_seed = base_seed + pop_i * 31337
+        hook.base_seed = pop_seed
+        hook.attach("noisy")
+        with torch.no_grad():
+            if objective == "ce":
+                ids, mask, labs = prepare_batch([example], tokenizer, device, max_length)
+                out = model(input_ids=ids, attention_mask=mask)
+                L_noisy = F.cross_entropy(
+                    out.logits.view(-1, model.config.vocab_size),
+                    labs.view(-1),
+                    ignore_index=-100,
+                ).item()
+            else:
+                R_noisy, _, _ = generate_reward(
+                    model,
+                    tokenizer,
+                    prompt,
+                    target,
+                    device,
+                    max_new_tokens,
+                    reward_do_sample,
+                    reward_continuation_only,
+                )
+                pop_noisy_rewards.append(float(R_noisy))
+                L_noisy = -float(R_noisy)
+        captured_noisy = {
+            k: {kk: v.clone() for kk, v in vv.items()}
+            for k, vv in hook._captured_noisy.items()
+        }
+        hook.detach()
+
+        delta_L = float(L_noisy - L_clean)
+        raw_delta_L.append(delta_L)
+
+        delta_a_parts = []
+        for name, _ in hook._targets:
+            a_c = captured_clean[name]["a_clean"]
+            a_n = captured_noisy[name]["a_noisy"]
+            delta_a_parts.append((a_n - a_c).flatten())
+        delta_a_cat = torch.cat(delta_a_parts)
+        norm_sq = float((delta_a_cat ** 2).sum().item())
+        N = delta_a_cat.numel()
+
+        pop_records.append(
+            {
+                "captured_noisy": captured_noisy,
+                "norm_sq": norm_sq,
+                "N": N,
+                "L_noisy": L_noisy,
+            }
+        )
+
+    delta_L_norm = normalize_delta_l_population(raw_delta_L, eps=delta_l_eps)
+    accumulated: dict[str, torch.Tensor] = {}
+    scale_values: list[float] = []
+
+    for pop_i, rec in enumerate(pop_records):
+        delta_L_tilde = float(delta_L_norm[pop_i])
+        norm_sq = rec["norm_sq"]
+        N = rec["N"]
+        captured_noisy = rec["captured_noisy"]
+        scale = eta * scale_n_factor(scale_n_mode, N) * delta_L_tilde / norm_sq
+        scale_values.append(scale)
+
+        if verbose and pop_i == 0:
+            print(
+                f"\n[DANP v4 grad normalized δL] L_clean={L_clean:.4f} "
+                f"L_noisy={rec['L_noisy']:.4f} delta_L_raw={raw_delta_L[0]:.6f} "
+                f"delta_L_tilde={delta_L_tilde:.6f} N={N} "
+                f"f(N)={scale_n_factor(scale_n_mode, N):.6g} "
+                f"norm_sq={norm_sq:.4e} scale={scale:.4e}",
+                flush=True,
+            )
+
+        for name, mod in hook._targets:
+            a_c = captured_clean[name]["a_clean"]
+            a_n = captured_noisy[name]["a_noisy"]
+            delta_a = a_n - a_c
+            x_star = captured_clean[name]["x_star"]
+            if x_star.dim() > 2:
+                x_star = x_star.reshape(-1, x_star.shape[-1])
+                delta_a = delta_a.reshape(-1, delta_a.shape[-1])
+            grad = delta_a.T @ x_star
+            update = scale * grad.float()
+            key = name + ".weight"
+            if key not in accumulated:
+                accumulated[key] = torch.zeros_like(update)
+            accumulated[key] += update
+
+    weight_updates = {}
+    for key, acc in accumulated.items():
+        avg = acc / n_population
+        mod_path = key[:-7]
+        mod = model.get_submodule(mod_path)
+        weight_updates[key] = avg.to(mod.weight.dtype)
+
+    delta_L_mean = float(np.mean(raw_delta_L))
+    decorrelation_updates = {}
+    if alpha > 0:
+        for name in captured_clean:
+            x_star = captured_clean[name]["x_star"]
+            if x_star.dim() > 2:
+                x_star = x_star.reshape(-1, x_star.shape[-1])
+            decorrelation_updates[name] = decorrelation_delta_r(
+                x_star, hook.R[name], alpha
+            )
+
+    scale_mean = float(np.mean(scale_values))
+    upd_frob_sq = sum(
+        float(torch.sum(u.float() ** 2).item()) for u in weight_updates.values()
+    )
+    update_norm = float(np.sqrt(upd_frob_sq))
+
+    return (
+        weight_updates,
+        decorrelation_updates,
+        float(L_clean),
+        delta_L_mean,
+        scale_mean,
+        update_norm,
+        pop_noisy_rewards,
+    )
+
+
+def danp_batch_step_normalized_delta_l(
+    model,
+    tokenizer,
+    batch,
+    device,
+    hook,
+    eta,
+    max_length,
+    objective,
+    max_new_tokens,
+    reward_do_sample,
+    reward_continuation_only,
+    n_population,
+    alpha,
+    base_seed,
+    verbose=False,
+    scale_n_mode: str = "n",
+    delta_l_eps: float = 1e-8,
+):
+    """
+    Batch step using ``danp_grad_single_normalized_delta_l`` (WP-style δL z-score).
+    Same return values as ``danp_batch_step``.
+    """
+    total_L, total_dL = 0.0, 0.0
+    total_scale, total_updn = 0.0, 0.0
+    accumulated = {}
+    accumulated_dec = {}
+    batch_pop_noisy_rewards: list[float] = []
+
+    for i, example in enumerate(batch):
+        example_seed = base_seed + i * 997
+        updates, dec_updates, L_clean, dL, sc_m, up_n, pop_rw = (
+            danp_grad_single_normalized_delta_l(
+                model,
+                tokenizer,
+                example,
+                device,
+                hook,
+                eta=eta,
+                max_length=max_length,
+                objective=objective,
+                max_new_tokens=max_new_tokens,
+                reward_do_sample=reward_do_sample,
+                reward_continuation_only=reward_continuation_only,
+                n_population=n_population,
+                alpha=alpha,
+                base_seed=example_seed,
+                verbose=(verbose and i == 0),
+                scale_n_mode=scale_n_mode,
+                delta_l_eps=delta_l_eps,
+            )
+        )
+        total_L += L_clean
+        total_dL += dL
+        total_scale += sc_m
+        total_updn += up_n
+        batch_pop_noisy_rewards.extend(pop_rw)
+
+        for key, upd in updates.items():
+            if key not in accumulated:
+                accumulated[key] = torch.zeros_like(upd)
+            accumulated[key] += upd
+        for name, dR in dec_updates.items():
+            if name not in accumulated_dec:
+                accumulated_dec[name] = torch.zeros_like(dR)
+            accumulated_dec[name] += dR
+
+    B = len(batch)
+    if objective == "reward" and batch_pop_noisy_rewards and B > 0:
+        expected = B * n_population
+        if len(batch_pop_noisy_rewards) == expected:
+            arr = np.asarray(batch_pop_noisy_rewards, dtype=np.float64).reshape(
+                B, n_population
+            )
+            batch_pop_noisy_rewards = [float(arr[:, j].mean()) for j in range(n_population)]
+
+    with torch.no_grad():
+        for key, acc in accumulated.items():
+            avg = acc / B
+            mod_path = key[:-7]
+            mod = model.get_submodule(mod_path)
+            mod.weight.sub_(avg.to(mod.weight.dtype))
+        for name, acc in accumulated_dec.items():
+            avg = acc / B
+            hook.R[name].sub_(
+                avg.to(device=hook.R[name].device, dtype=hook.R[name].dtype)
+            )
+
+    return total_L / B, total_dL / B, total_scale / B, total_updn / B, batch_pop_noisy_rewards
+
+
 # ===========================================================================
 # Batch step
 # ===========================================================================
@@ -949,6 +1256,14 @@ def main():
     print(f"Perturbing {n_targets} Linear layers, {total_params:,} weight parameters")
     print(f"R decorrelation: {'enabled alpha='+str(args.alpha) if args.alpha > 0 else 'disabled'}")
     print(f"scale_n_mode={args.scale_n_mode}  (scale = η · f(N) · δL / ‖δa‖²)")
+    if args.normalize_delta_l:
+        print(f"δL normalization: WP-style z-score (eps={args.delta_l_norm_eps})")
+
+    batch_step_fn = (
+        danp_batch_step_normalized_delta_l
+        if args.normalize_delta_l
+        else danp_batch_step
+    )
 
     if args.objective == "ce":
         baseline = eval_ce(model, tok, eval_data, device, args.max_length, args.batch_size)
@@ -979,7 +1294,7 @@ def main():
 
         pbar = tqdm(range(1), desc=f"Epoch {epoch+1}/{args.epochs}")
         for _ in pbar:
-            _L, dL, sc_b, up_b, pop_rw = danp_batch_step(
+            _L, dL, sc_b, up_b, pop_rw = batch_step_fn(
                 model, tok, batch, device, hook,
                 eta=args.eta, max_length=args.max_length,
                 objective=args.objective,
@@ -990,6 +1305,11 @@ def main():
                 alpha=args.alpha, base_seed=base_seed,
                 verbose=(args.verbose and epoch == 0),
                 scale_n_mode=args.scale_n_mode,
+                **(
+                    {"delta_l_eps": args.delta_l_norm_eps}
+                    if args.normalize_delta_l
+                    else {}
+                ),
             )
             epoch_dL.append(dL)
             epoch_scale.append(sc_b)
