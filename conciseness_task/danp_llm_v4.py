@@ -322,6 +322,11 @@ def parse_args():
         default=1e-8,
         help="Epsilon in std denominator for --normalize_delta_l (default 1e-8, matches WP).",
     )
+    p.add_argument(
+        "--no_plots",
+        action="store_true",
+        help="Skip writing reward/CE metric plots under --output_dir.",
+    )
     return p.parse_args()
 
 
@@ -1217,6 +1222,170 @@ def maybe_print_explosion(
 
 
 # ===========================================================================
+# Training plots (reward / eval histories)
+# ===========================================================================
+def save_training_metric_plots(
+    output_dir: str,
+    objective: str,
+    baseline: float,
+    *,
+    train_reward_history: list[float],
+    pop_reward_mean_history: list[float],
+    pop_reward_min_history: list[float],
+    pop_reward_max_history: list[float],
+    eval_metric_history: list[float],
+    eval_epochs: list[int],
+    normalize_delta_l: bool,
+) -> list[str]:
+    """
+    Write PNGs under ``output_dir``: combined 2×2 panel plus one file per metric.
+    Returns paths written (empty if matplotlib unavailable or no data).
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed; skipping training plots.", flush=True)
+        return []
+
+    os.makedirs(output_dir, exist_ok=True)
+    tag = "norm_delta_l" if normalize_delta_l else "canonical"
+    written: list[str] = []
+
+    def _save_one(fig, name: str) -> None:
+        path = os.path.join(output_dir, name)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        written.append(path)
+
+    if objective == "reward":
+        fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=False)
+        fig.suptitle(
+            f"DANP v4 training metrics ({tag})",
+            fontsize=12,
+            fontweight="bold",
+        )
+
+        if train_reward_history:
+            ep = np.arange(1, len(train_reward_history) + 1)
+            axes[0, 0].plot(ep, train_reward_history, "o-", color="C0", ms=4, lw=1.5)
+            axes[0, 0].axhline(
+                baseline, color="gray", ls="--", lw=1, alpha=0.7, label="baseline"
+            )
+            axes[0, 0].set_title("Mean train reward (clean model)")
+            axes[0, 0].set_ylabel("reward")
+            axes[0, 0].legend(loc="best", fontsize=8)
+            axes[0, 0].grid(True, alpha=0.3)
+
+        if pop_reward_max_history:
+            ep = np.arange(1, len(pop_reward_max_history) + 1)
+            axes[0, 1].plot(
+                ep, pop_reward_max_history, "s-", color="C1", ms=4, lw=1.5, label="max"
+            )
+            axes[0, 1].set_title("Pop noisy reward (max per epoch)")
+            axes[0, 1].set_ylabel("reward")
+            axes[0, 1].legend(loc="best", fontsize=8)
+            axes[0, 1].grid(True, alpha=0.3)
+
+        if pop_reward_min_history:
+            ep = np.arange(1, len(pop_reward_min_history) + 1)
+            axes[1, 0].plot(
+                ep, pop_reward_min_history, "^-", color="C2", ms=4, lw=1.5, label="min"
+            )
+            axes[1, 0].set_title("Pop noisy reward (min per epoch)")
+            axes[1, 0].set_xlabel("epoch")
+            axes[1, 0].set_ylabel("reward")
+            axes[1, 0].legend(loc="best", fontsize=8)
+            axes[1, 0].grid(True, alpha=0.3)
+
+        if eval_metric_history and eval_epochs:
+            axes[1, 1].plot(
+                eval_epochs,
+                eval_metric_history,
+                "D-",
+                color="C3",
+                ms=5,
+                lw=1.5,
+                label="eval",
+            )
+            axes[1, 1].axhline(
+                baseline, color="gray", ls="--", lw=1, alpha=0.7, label="baseline"
+            )
+            axes[1, 1].set_title("Eval reward")
+            axes[1, 1].set_xlabel("epoch")
+            axes[1, 1].set_ylabel("reward")
+            axes[1, 1].legend(loc="best", fontsize=8)
+            axes[1, 1].grid(True, alpha=0.3)
+
+        if pop_reward_mean_history:
+            ep = np.arange(1, len(pop_reward_mean_history) + 1)
+            fig2, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(ep, pop_reward_mean_history, "o-", color="C4", ms=4, lw=1.5)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("reward")
+            ax.set_title(f"Pop noisy reward mean per epoch ({tag})")
+            ax.grid(True, alpha=0.3)
+            _save_one(fig2, f"train_pop_reward_mean_{tag}.png")
+
+        _save_one(fig, f"training_metrics_{tag}.png")
+
+        if train_reward_history:
+            fig_t, ax = plt.subplots(figsize=(8, 4))
+            ep = np.arange(1, len(train_reward_history) + 1)
+            ax.plot(ep, train_reward_history, "o-", color="C0", ms=4, lw=1.5)
+            ax.axhline(baseline, color="gray", ls="--", lw=1, alpha=0.7, label="baseline")
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("reward")
+            ax.set_title(f"Mean train reward per epoch ({tag})")
+            ax.legend(loc="best", fontsize=8)
+            ax.grid(True, alpha=0.3)
+            _save_one(fig_t, f"train_reward_mean_{tag}.png")
+
+        for hist, label, color, fname in (
+            (pop_reward_max_history, "max", "C1", f"train_pop_reward_max_{tag}.png"),
+            (pop_reward_min_history, "min", "C2", f"train_pop_reward_min_{tag}.png"),
+        ):
+            if not hist:
+                continue
+            fig_m, ax = plt.subplots(figsize=(8, 4))
+            ep = np.arange(1, len(hist) + 1)
+            ax.plot(ep, hist, "o-", color=color, ms=4, lw=1.5)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("reward")
+            ax.set_title(f"Pop noisy reward {label} per epoch ({tag})")
+            ax.grid(True, alpha=0.3)
+            _save_one(fig_m, fname)
+
+        if eval_metric_history and eval_epochs:
+            fig_e, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(eval_epochs, eval_metric_history, "D-", color="C3", ms=5, lw=1.5)
+            ax.axhline(baseline, color="gray", ls="--", lw=1, alpha=0.7, label="baseline")
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("reward")
+            ax.set_title(f"Eval reward ({tag})")
+            ax.legend(loc="best", fontsize=8)
+            ax.grid(True, alpha=0.3)
+            _save_one(fig_e, f"eval_reward_{tag}.png")
+
+    elif objective == "ce" and eval_metric_history and eval_epochs:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(eval_epochs, eval_metric_history, "D-", color="C1", ms=5, lw=1.5)
+        ax.axhline(baseline, color="gray", ls="--", lw=1, alpha=0.7, label="baseline CE")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("CE loss")
+        ax.set_title(f"Eval CE ({tag})")
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(True, alpha=0.3)
+        _save_one(fig, f"eval_ce_{tag}.png")
+
+    for p in written:
+        print(f"Wrote plot {p}", flush=True)
+    return written
+
+
+# ===========================================================================
 # Main
 # ===========================================================================
 def main():
@@ -1275,7 +1444,11 @@ def main():
 
     train_scale_history: list[float] = []
     train_reward_history: list[float] = []
-    eval_metric_history  = []
+    pop_reward_mean_history: list[float] = []
+    pop_reward_min_history: list[float] = []
+    pop_reward_max_history: list[float] = []
+    eval_metric_history: list[float] = []
+    eval_epochs: list[int] = []
     global_step          = 0
     log_reward = args.objective == "reward" and (
         args.log_generations_every > 0 or args.log_first_batch_each_epoch)
@@ -1349,6 +1522,9 @@ def main():
             mean_reward = float(np.mean(epoch_pop_noisy_rewards))
             min_reward = float(np.min(epoch_pop_noisy_rewards))
             max_reward = float(np.max(epoch_pop_noisy_rewards))
+            pop_reward_mean_history.append(mean_reward)
+            pop_reward_min_history.append(min_reward)
+            pop_reward_max_history.append(max_reward)
             print(
                 f"[Epoch {epoch+1}] pop_noisy_reward (N={args.n_population} candidates; "
                 f"each = mean R_noisy over train batch prompts, WP-style; "
@@ -1385,6 +1561,7 @@ def main():
                                   reward_continuation_only)
             prev_ev = eval_metric_history[-1] if eval_metric_history else None
             eval_metric_history.append(ev)
+            eval_epochs.append(epoch + 1)
             tag = "CE" if args.objective == "ce" else "reward"
             print(f"  Eval {tag}: {ev:.4f}")
             maybe_print_explosion(f"eval_{tag.lower()}", ev, prev_ev)
@@ -1408,8 +1585,12 @@ def main():
     metrics_payload = {
         "baseline": float(baseline),
         "eval_metric_history": [float(x) for x in eval_metric_history],
+        "eval_epochs": list(eval_epochs),
         "train_scale_history": [float(x) for x in train_scale_history],
         "train_reward_history": [float(x) for x in train_reward_history],
+        "pop_reward_mean_history": [float(x) for x in pop_reward_mean_history],
+        "pop_reward_min_history": [float(x) for x in pop_reward_min_history],
+        "pop_reward_max_history": [float(x) for x in pop_reward_max_history],
         "objective": args.objective,
         "args": vars(args),
     }
@@ -1427,6 +1608,22 @@ def main():
         tok.save_pretrained(save_dir)
     else:
         print("Skipping model save (--no_save).")
+
+    if not args.no_plots:
+        plot_dir = os.path.join(args.output_dir, "plots")
+        save_training_metric_plots(
+            plot_dir,
+            args.objective,
+            float(baseline),
+            train_reward_history=train_reward_history,
+            pop_reward_mean_history=pop_reward_mean_history,
+            pop_reward_min_history=pop_reward_min_history,
+            pop_reward_max_history=pop_reward_max_history,
+            eval_metric_history=eval_metric_history,
+            eval_epochs=eval_epochs,
+            normalize_delta_l=args.normalize_delta_l,
+        )
+
     print("Done.")
 
 
