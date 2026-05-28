@@ -10,7 +10,11 @@ datasets>=2.14.0
 
 # Data processing and analysis
 pandas>=2.0.0
+matplotlib>=3.7.0
 
 # Optional but recommended
 sentencepiece>=0.1.99
 protobuf>=3.20.0
+
+# Semantic reward (danp_llm_v4 compute_reward_2)
+sentence-transformers>=2.2.0

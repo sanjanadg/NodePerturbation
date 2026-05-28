@@ -171,7 +171,25 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging as hf_logging
 
+from sentence_transformers import SentenceTransformer, util
+
 hf_logging.set_verbosity_error()
+
+DEFAULT_REWARD_ENCODER_NAME = "all-MiniLM-L6-v2"
+_reward_encoder: SentenceTransformer | None = None
+
+
+def _get_reward_encoder(model_name: str = DEFAULT_REWARD_ENCODER_NAME) -> SentenceTransformer:
+    global _reward_encoder
+    if _reward_encoder is None:
+        _reward_encoder = SentenceTransformer(model_name)
+    return _reward_encoder
+
+
+def _cos_sim(text_a: str, text_b: str) -> float:
+    enc = _get_reward_encoder()
+    embs = enc.encode([text_a, text_b], convert_to_tensor=True)
+    return float(util.cos_sim(embs[0:1], embs[1:2]).item())
 
 # --- scale_n_mode (keep in sync with sweep_danp_llm_v4.py) ---------------------------
 CANONICAL_SCALE_N_MODES = frozenset(
@@ -341,6 +359,30 @@ WP_DUMMY_EXAMPLES = [
 def compute_reward(generated_text: str, target_text: str) -> float:
     return -abs(len(generated_text) - len(target_text))
 
+
+def compute_reward_2(
+    prompt: str,
+    generated_text: str,
+    target_text: str,
+    *,
+    w_length: float = 0.2,
+    w_target: float = 0.5,
+    w_prompt: float = 0.3,
+) -> float:
+    """
+    Length + semantic similarity reward. Higher is better (same sign as compute_reward).
+
+    ``generated_text`` should be the continuation when training with
+    ``reward_continuation_only`` (see ``generate_reward``).
+
+    Length term is normalized by ``max(len(target), 1)`` so it stays on a similar scale
+    as cosine similarities in [-1, 1].
+    """
+    denom = max(len(target_text), 1)
+    length_reward = -abs(len(generated_text) - len(target_text)) / denom
+    target_sim = _cos_sim(generated_text, target_text)
+    prompt_sim = _cos_sim(generated_text, prompt)
+    return w_length * length_reward + w_target * target_sim + w_prompt * prompt_sim
 
 # ===========================================================================
 # Layer selection helpers  (unchanged from v1)
@@ -606,8 +648,9 @@ def generate_reward(model, tokenizer, prompt, target, device,
         scored_text = tokenizer.decode(cont_ids, skip_special_tokens=True)
     else:
         scored_text = full_text
-    # Reward compares target length to full model output, not continuation-only length.
-    r = compute_reward(full_text, target)
+    # Score continuation (or full decode) — same convention as danp_llm_v1.
+    # r = compute_reward(scored_text, target)
+    r = compute_reward_2(prompt, full_text, target)
     return r, full_text, scored_text
 
 
