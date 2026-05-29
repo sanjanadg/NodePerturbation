@@ -365,8 +365,8 @@ WP_DUMMY_EXAMPLES = [
     ("If all birds can fly and penguins are birds, can penguins fly?", "No"),
 ]
 
-def compute_reward(generated_text: str, target_text: str) -> float:
-    return -abs(len(generated_text) - len(target_text))
+# def compute_reward(generated_text: str, target_text: str) -> float:
+#     return -abs(len(generated_text) - len(target_text))
 
 
 # def compute_reward_2(
@@ -392,6 +392,21 @@ def compute_reward(generated_text: str, target_text: str) -> float:
 #     target_sim = _cos_sim(generated_text, target_text)
 #     prompt_sim = _cos_sim(generated_text, prompt)
 #     return w_length * length_reward + w_target * target_sim + w_prompt * prompt_sim
+
+
+MIN_GEN_CHARS = 5
+
+def compute_reward(generated_text: str, target_text: str, prompt: str = "") -> float:
+    if not target_text:
+        return 0.0
+    denom = max(len(target_text), 1)
+    length_penalty = -abs(len(generated_text) - len(target_text)) / denom
+    target_sim = _cos_sim(generated_text, target_text)
+
+    if len(generated_text) < MIN_GEN_CHARS:
+        return -10.0  # hard penalty for degenerate outputs
+
+    return 0.3 * length_penalty + 0.7 * target_sim
 
 # ===========================================================================
 # Layer selection helpers  (unchanged from v1)
