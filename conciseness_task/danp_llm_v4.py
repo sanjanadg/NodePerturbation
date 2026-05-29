@@ -332,13 +332,22 @@ def parse_args():
     p.add_argument(
         "--normalize_delta_l",
         action="store_true",
-        help="Use danp_batch_step_normalized_delta_l (WP-style z-score of δL over population).",
+        help="Use danp_batch_step_normalized_delta_l (z-score δL per example over population). "
+        "Not the same as WP batch ranking; see --wp_population_ranking.",
+    )
+    p.add_argument(
+        "--wp_population_ranking",
+        action="store_true",
+        help="Use danp_batch_step_wp_population_ranking: z-score each candidate's "
+        "mean reward over the full train batch (matches wp_conciseness / ES), then "
+        "apply DANP outer-product updates. Takes precedence over --normalize_delta_l.",
     )
     p.add_argument(
         "--delta_l_norm_eps",
         type=float,
         default=1e-8,
-        help="Epsilon in std denominator for --normalize_delta_l (default 1e-8, matches WP).",
+        help="Epsilon in std denominator for --normalize_delta_l / --wp_population_ranking "
+        "(default 1e-8, matches WP).",
     )
     p.add_argument(
         "--no_plots",
@@ -360,29 +369,29 @@ def compute_reward(generated_text: str, target_text: str) -> float:
     return -abs(len(generated_text) - len(target_text))
 
 
-def compute_reward_2(
-    prompt: str,
-    generated_text: str,
-    target_text: str,
-    *,
-    w_length: float = 0.2,
-    w_target: float = 0.5,
-    w_prompt: float = 0.3,
-) -> float:
-    """
-    Length + semantic similarity reward. Higher is better (same sign as compute_reward).
+# def compute_reward_2(
+#     prompt: str,
+#     generated_text: str,
+#     target_text: str,
+#     *,
+#     w_length: float = 0.2,
+#     w_target: float = 0.5,
+#     w_prompt: float = 0.3,
+# ) -> float:
+#     """
+#     Length + semantic similarity reward. Higher is better (same sign as compute_reward).
 
-    ``generated_text`` should be the continuation when training with
-    ``reward_continuation_only`` (see ``generate_reward``).
+#     ``generated_text`` should be the continuation when training with
+#     ``reward_continuation_only`` (see ``generate_reward``).
 
-    Length term is normalized by ``max(len(target), 1)`` so it stays on a similar scale
-    as cosine similarities in [-1, 1].
-    """
-    denom = max(len(target_text), 1)
-    length_reward = -abs(len(generated_text) - len(target_text)) / denom
-    target_sim = _cos_sim(generated_text, target_text)
-    prompt_sim = _cos_sim(generated_text, prompt)
-    return w_length * length_reward + w_target * target_sim + w_prompt * prompt_sim
+#     Length term is normalized by ``max(len(target), 1)`` so it stays on a similar scale
+#     as cosine similarities in [-1, 1].
+#     """
+#     denom = max(len(target_text), 1)
+#     length_reward = -abs(len(generated_text) - len(target_text)) / denom
+#     target_sim = _cos_sim(generated_text, target_text)
+#     prompt_sim = _cos_sim(generated_text, prompt)
+#     return w_length * length_reward + w_target * target_sim + w_prompt * prompt_sim
 
 # ===========================================================================
 # Layer selection helpers  (unchanged from v1)
@@ -649,8 +658,8 @@ def generate_reward(model, tokenizer, prompt, target, device,
     else:
         scored_text = full_text
     # Score continuation (or full decode) — same convention as danp_llm_v1.
-    # r = compute_reward(scored_text, target)
-    r = compute_reward_2(prompt, full_text, target)
+    r = compute_reward(scored_text, target)
+    # r = compute_reward_2(prompt, full_text, target)
     return r, full_text, scored_text
 
 
@@ -826,13 +835,74 @@ def normalize_delta_l_population(
     eps: float = 1e-8,
 ) -> np.ndarray:
     """
-    WP-style z-score of loss deltas across one population (mean 0, std ~1).
+    Z-score of loss deltas across one population (mean 0, std ~1).
 
-    Matches wp_conciseness reward normalization: (x - mean) / (std + eps).
-    Used by ``danp_grad_single_normalized_delta_l`` only; canonical DANP uses raw δL.
+    Used by ``danp_grad_single_normalized_delta_l`` **per training example**
+    (re-center each prompt's population separately). Same formula as WP's
+    ``(x - mean) / (std + eps)`` but **not** WP's batch-wide candidate ranking;
+    see ``normalize_fitness_wp_population`` / ``danp_batch_step_wp_population_ranking``.
+    Canonical DANP uses raw δL without this transform.
     """
     arr = np.asarray(delta_L_list, dtype=np.float64)
     return (arr - arr.mean()) / (arr.std() + eps)
+
+
+def normalize_fitness_wp_population(
+    fitness_list: list[float],
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """
+    WP / ES population ranking: z-score **one fitness value per candidate**
+    after each candidate is scored on the full batch.
+
+    Matches ``wp_conciseness.py``::
+        rewards_normalized = (rewards - mean) / (std + eps)
+
+    where ``rewards[i]`` is candidate i's **mean reward over all prompts**.
+    """
+    arr = np.asarray(fitness_list, dtype=np.float64)
+    return (arr - arr.mean()) / (arr.std() + eps)
+
+
+def _danp_global_norm_sq(captured_clean, captured_noisy, hook) -> tuple[float, int]:
+    delta_a_parts = []
+    for name, _ in hook._targets:
+        a_c = captured_clean[name]["a_clean"]
+        a_n = captured_noisy[name]["a_noisy"]
+        x_s = captured_clean[name]["x_star"]
+        aligned = _align_danp_layer_activations(a_c, a_n, x_s)
+        if aligned is None:
+            continue
+        _x, ac, an = aligned
+        delta_a_parts.append((an - ac).flatten())
+    delta_a_cat = torch.cat(delta_a_parts) if delta_a_parts else torch.tensor([])
+    norm_sq = float((delta_a_cat ** 2).sum().item()) if delta_a_cat.numel() else 1.0
+    n = max(int(delta_a_cat.numel()), 1)
+    return norm_sq, n
+
+
+def _danp_accumulate_outer_product(
+    hook,
+    captured_clean,
+    captured_noisy,
+    scale: float,
+    accumulated: dict[str, torch.Tensor],
+) -> None:
+    for name, _mod in hook._targets:
+        a_c = captured_clean[name]["a_clean"]
+        a_n = captured_noisy[name]["a_noisy"]
+        x_star = captured_clean[name]["x_star"]
+        aligned = _align_danp_layer_activations(a_c, a_n, x_star)
+        if aligned is None:
+            continue
+        x_star, a_c, a_n = aligned
+        delta_a = a_n - a_c
+        grad = delta_a.T @ x_star
+        update = scale * grad.float()
+        key = name + ".weight"
+        if key not in accumulated:
+            accumulated[key] = torch.zeros_like(update)
+        accumulated[key] += update
 
 
 def danp_grad_single_normalized_delta_l(
@@ -1123,6 +1193,209 @@ def danp_batch_step_normalized_delta_l(
     return total_L / B, total_dL / B, total_scale / B, total_updn / B, batch_pop_noisy_rewards
 
 
+def danp_batch_step_wp_population_ranking(
+    model,
+    tokenizer,
+    batch,
+    device,
+    hook,
+    eta,
+    max_length,
+    objective,
+    max_new_tokens,
+    reward_do_sample,
+    reward_continuation_only,
+    n_population,
+    alpha,
+    base_seed,
+    verbose=False,
+    scale_n_mode: str = "n",
+    reward_norm_eps: float = 1e-8,
+):
+    """
+    Batch step with **WP-matched population ranking**.
+
+    Unlike ``danp_batch_step_normalized_delta_l`` (z-score δL per example),
+    this matches ``wp_conciseness.py`` / ES:
+
+      1. Each population member i is evaluated on **every** example in ``batch``.
+      2. fitness_i = mean_j reward(noisy forward on example j)  (or -CE loss).
+      3. coeff_i = (fitness_i - mean(fitness)) / (std(fitness) + eps).
+      4. DANP update uses coeff_i (same for all j) with activation outer products:
+             scale_ij = -η f(N_ij) coeff_i / ‖δa_ij‖²
+         (minus sign so positive coeff → move toward helpful noise, like WP).
+
+    Returns same 5-tuple as ``danp_batch_step``.
+    """
+    if not batch:
+        return 0.0, 0.0, 0.0, 0.0, []
+
+    # --- Phase 1: clean forward on each example --------------------------------
+    clean_records: list[dict] = []
+    total_L = 0.0
+
+    for j, example in enumerate(batch):
+        prompt, target = example
+        hook.base_seed = base_seed + j * 997
+        hook.attach("clean")
+        with torch.no_grad():
+            if objective == "ce":
+                ids, mask, labs = prepare_batch([example], tokenizer, device, max_length)
+                out = model(input_ids=ids, attention_mask=mask)
+                L_clean = F.cross_entropy(
+                    out.logits.view(-1, model.config.vocab_size),
+                    labs.view(-1),
+                    ignore_index=-100,
+                ).item()
+            else:
+                R_clean, _, _ = generate_reward(
+                    model, tokenizer, prompt, target, device,
+                    max_new_tokens, reward_do_sample, reward_continuation_only,
+                )
+                L_clean = -float(R_clean)
+        captured_clean = {
+            k: {kk: v.clone() for kk, v in vv.items()}
+            for k, vv in hook._captured_clean.items()
+        }
+        hook.detach()
+        clean_records.append({"L_clean": float(L_clean), "captured": captured_clean})
+        total_L += float(L_clean)
+
+    # --- Phase 2: noisy population — same seed per pop member on all examples --
+    pop_fitness: list[float] = []
+    pop_example_records: list[list[dict]] = []
+    raw_delta_L_all: list[float] = []
+    batch_pop_noisy_rewards: list[float] = []
+
+    for pop_i in range(n_population):
+        pop_seed = base_seed + pop_i * 31337
+        per_example: list[dict] = []
+        fitness_vals: list[float] = []
+
+        for j, example in enumerate(batch):
+            prompt, target = example
+            hook.base_seed = pop_seed
+            hook.attach("noisy")
+            with torch.no_grad():
+                if objective == "ce":
+                    ids, mask, labs = prepare_batch([example], tokenizer, device, max_length)
+                    out = model(input_ids=ids, attention_mask=mask)
+                    L_noisy = F.cross_entropy(
+                        out.logits.view(-1, model.config.vocab_size),
+                        labs.view(-1),
+                        ignore_index=-100,
+                    ).item()
+                    fitness_vals.append(-float(L_noisy))
+                else:
+                    R_noisy, _, _ = generate_reward(
+                        model, tokenizer, prompt, target, device,
+                        max_new_tokens, reward_do_sample, reward_continuation_only,
+                    )
+                    fitness_vals.append(float(R_noisy))
+                    L_noisy = -float(R_noisy)
+            captured_noisy = {
+                k: {kk: v.clone() for kk, v in vv.items()}
+                for k, vv in hook._captured_noisy.items()
+            }
+            hook.detach()
+
+            L_clean = clean_records[j]["L_clean"]
+            raw_delta_L_all.append(float(L_noisy - L_clean))
+            per_example.append(
+                {
+                    "L_noisy": float(L_noisy),
+                    "captured": captured_noisy,
+                }
+            )
+
+        pop_mean_fitness = float(np.mean(fitness_vals))
+        pop_fitness.append(pop_mean_fitness)
+        pop_example_records.append(per_example)
+        if objective == "reward":
+            batch_pop_noisy_rewards.append(pop_mean_fitness)
+
+        if verbose and pop_i == 0:
+            print(
+                f"\n[DANP v4 WP rank] pop 0 mean batch fitness={pop_mean_fitness:.4f} "
+                f"(over {len(batch)} examples)",
+                flush=True,
+            )
+
+    # --- Phase 3: WP z-score over population -----------------------------------
+    fitness_norm = normalize_fitness_wp_population(pop_fitness, eps=reward_norm_eps)
+
+    if verbose:
+        print(
+            f"[DANP v4 WP rank] population fitness (mean over batch): "
+            f"{[round(x, 4) for x in pop_fitness[: min(5, len(pop_fitness))]]}"
+            f"{'...' if len(pop_fitness) > 5 else ''}",
+            flush=True,
+        )
+        print(
+            f"[DANP v4 WP rank] normalized coeffs: "
+            f"{[round(float(x), 4) for x in fitness_norm[: min(5, len(fitness_norm))]]}"
+            f"{'...' if len(fitness_norm) > 5 else ''}",
+            flush=True,
+        )
+
+    # --- Phase 4: outer-product updates ----------------------------------------
+    accumulated: dict[str, torch.Tensor] = {}
+    accumulated_dec: dict[str, torch.Tensor] = {}
+    scale_values: list[float] = []
+    B = len(batch)
+
+    for pop_i in range(n_population):
+        coeff = float(fitness_norm[pop_i])
+        for j, example in enumerate(batch):
+            captured_clean = clean_records[j]["captured"]
+            captured_noisy = pop_example_records[pop_i][j]["captured"]
+            norm_sq, n = _danp_global_norm_sq(captured_clean, captured_noisy, hook)
+            scale = -eta * scale_n_factor(scale_n_mode, n) * coeff / norm_sq
+            scale_values.append(scale)
+            _danp_accumulate_outer_product(
+                hook, captured_clean, captured_noisy, scale, accumulated,
+            )
+
+    if alpha > 0:
+        for j, rec in enumerate(clean_records):
+            for name in rec["captured"]:
+                x_star = rec["captured"][name]["x_star"]
+                if x_star.dim() > 2:
+                    x_star = x_star.reshape(-1, x_star.shape[-1])
+                dR = decorrelation_delta_r(x_star, hook.R[name], alpha)
+                if name not in accumulated_dec:
+                    accumulated_dec[name] = torch.zeros_like(dR)
+                accumulated_dec[name] += dR
+
+    n_updates = n_population * B
+    weight_updates = {key: acc / n_updates for key, acc in accumulated.items()}
+    with torch.no_grad():
+        for key, avg in weight_updates.items():
+            mod_path = key[:-7]
+            mod = model.get_submodule(mod_path)
+            mod.weight.sub_(avg.to(mod.weight.dtype))
+        for name, acc in accumulated_dec.items():
+            avg = acc / B
+            hook.R[name].sub_(
+                avg.to(device=hook.R[name].device, dtype=hook.R[name].dtype)
+            )
+
+    mean_dL = float(np.mean(raw_delta_L_all)) if raw_delta_L_all else 0.0
+    scale_mean = float(np.mean(scale_values)) if scale_values else 0.0
+    upd_frob_sq = sum(
+        float(torch.sum(u.float() ** 2).item()) for u in weight_updates.values()
+    )
+    update_norm = float(np.sqrt(upd_frob_sq))
+
+    return (
+        total_L / B,
+        mean_dL,
+        scale_mean,
+        update_norm,
+        batch_pop_noisy_rewards,
+    )
+
+
 # ===========================================================================
 # Batch step
 # ===========================================================================
@@ -1312,6 +1585,7 @@ def save_training_metric_plots(
     eval_metric_history: list[float],
     eval_epochs: list[int],
     normalize_delta_l: bool,
+    wp_population_ranking: bool = False,
 ) -> list[str]:
     """
     Write PNGs under ``output_dir``: combined 2×2 panel plus one file per metric.
@@ -1327,7 +1601,11 @@ def save_training_metric_plots(
         return []
 
     os.makedirs(output_dir, exist_ok=True)
-    tag = "norm_delta_l" if normalize_delta_l else "canonical"
+    tag = (
+        "wp_rank"
+        if wp_population_ranking
+        else ("norm_delta_l" if normalize_delta_l else "canonical")
+    )
     written: list[str] = []
 
     def _save_one(fig, name: str) -> None:
@@ -1501,14 +1779,27 @@ def main():
     print(f"Perturbing {n_targets} Linear layers, {total_params:,} weight parameters")
     print(f"R decorrelation: {'enabled alpha='+str(args.alpha) if args.alpha > 0 else 'disabled'}")
     print(f"scale_n_mode={args.scale_n_mode}  (scale = η · f(N) · δL / ‖δa‖²)")
-    if args.normalize_delta_l:
-        print(f"δL normalization: WP-style z-score (eps={args.delta_l_norm_eps})")
+    if args.normalize_delta_l and args.wp_population_ranking:
+        print(
+            "Warning: both --normalize_delta_l and --wp_population_ranking set; "
+            "using WP batch population ranking.",
+            flush=True,
+        )
+    if args.wp_population_ranking:
+        print(
+            f"Population ranking: WP batch (z-score mean reward over full train batch, "
+            f"eps={args.delta_l_norm_eps})",
+            flush=True,
+        )
+    elif args.normalize_delta_l:
+        print(f"δL normalization: per-example z-score (eps={args.delta_l_norm_eps})")
 
-    batch_step_fn = (
-        danp_batch_step_normalized_delta_l
-        if args.normalize_delta_l
-        else danp_batch_step
-    )
+    if args.wp_population_ranking:
+        batch_step_fn = danp_batch_step_wp_population_ranking
+    elif args.normalize_delta_l:
+        batch_step_fn = danp_batch_step_normalized_delta_l
+    else:
+        batch_step_fn = danp_batch_step
 
     if args.objective == "ce":
         baseline = eval_ce(model, tok, eval_data, device, args.max_length, args.batch_size)
@@ -1555,9 +1846,13 @@ def main():
                 verbose=(args.verbose and epoch == 0),
                 scale_n_mode=args.scale_n_mode,
                 **(
-                    {"delta_l_eps": args.delta_l_norm_eps}
-                    if args.normalize_delta_l
-                    else {}
+                    {"reward_norm_eps": args.delta_l_norm_eps}
+                    if args.wp_population_ranking
+                    else (
+                        {"delta_l_eps": args.delta_l_norm_eps}
+                        if args.normalize_delta_l
+                        else {}
+                    )
                 ),
             )
             epoch_dL.append(dL)
@@ -1698,6 +1993,7 @@ def main():
             eval_metric_history=eval_metric_history,
             eval_epochs=eval_epochs,
             normalize_delta_l=args.normalize_delta_l,
+            wp_population_ranking=args.wp_population_ranking,
         )
 
     print("Done.")
