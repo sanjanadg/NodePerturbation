@@ -394,7 +394,7 @@ WP_DUMMY_EXAMPLES = [
 #     return w_length * length_reward + w_target * target_sim + w_prompt * prompt_sim
 
 
-MIN_GEN_CHARS = 5
+MIN_GEN_CHARS = 1
 
 def compute_reward(generated_text: str, target_text: str, prompt: str = "") -> float:
     if not target_text:
@@ -406,7 +406,7 @@ def compute_reward(generated_text: str, target_text: str, prompt: str = "") -> f
     if len(generated_text) < MIN_GEN_CHARS:
         return -10.0  # hard penalty for degenerate outputs
 
-    return 0.3 * length_penalty + 0.7 * target_sim
+    return 0.6 * length_penalty + 0.4 * target_sim
 
 # ===========================================================================
 # Layer selection helpers  (unchanged from v1)
